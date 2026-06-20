@@ -11,27 +11,30 @@
 
 import json
 import msvcrt
-import os
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pyautogui
-from PIL import Image
 
 from udlrtui import C, B, K, Renderer, Navigator, widgets as W
 from udlrtui import get_key, drain_keyboard
-from focus import FocusGuard, get_foreground_title
+from core.focus import FocusGuard
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
 
-# ── 路径 ──────────────────────────────────────────────────
+# ── 任务级路径 (tasks/auction/data/) ──────────────────────
 
-DATA_DIR = Path(__file__).parent / "data"
+_TASK_DIR = Path(__file__).parent
+DATA_DIR = _TASK_DIR / "data"
 CONFIG_FILE = DATA_DIR / "config.json"
 TEMPLATE_FILE = DATA_DIR / "template.png"
+
+# ── 默认配置 ──────────────────────────────────────────────
+
+_DEFAULTS = {"region": None, "threshold": 0.90}
 
 
 # ── 配置 ──────────────────────────────────────────────────
@@ -40,7 +43,7 @@ def _load_config() -> dict:
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"region": None, "threshold": 0.90}
+    return dict(_DEFAULTS)
 
 
 def _save_config(cfg: dict) -> None:
@@ -154,7 +157,6 @@ def _press(key: str, interval: float = 0.05) -> None:
 # ── 动态宽度 ──────────────────────────────────────────────
 
 def _calc_width(content_lines: list[str], title: str, min_w: int = 32) -> int:
-    """根据内容计算框宽 (W = max内容显示宽度 + 6)。"""
     from udlrtui import display_width
     max_w = display_width(title) + 6
     for line in content_lines:
@@ -163,19 +165,14 @@ def _calc_width(content_lines: list[str], title: str, min_w: int = 32) -> int:
 
 
 # ══════════════════════════════════════════════════════════
-#  拍卖行抢车 — 主入口
+#  拍卖行抢车主入口
 # ══════════════════════════════════════════════════════════
 
 def run_auction_sniper(renderer: Renderer) -> None:
     cfg = _load_config()
     region = cfg.get("region")
     threshold = cfg.get("threshold", 0.90)
-    template = None
-
-    if region and TEMPLATE_FILE.exists():
-        template = cv2.imread(str(TEMPLATE_FILE))
-        if template is not None:
-            template = cv2.cvtColor(template, cv2.COLOR_BGR2RGB)
+    template = _load_template(region)
 
     renderer.reset()
     drain_keyboard()
@@ -205,7 +202,6 @@ def run_auction_sniper(renderer: Renderer) -> None:
                 W.line(lines_content[1], w),
                 W.divider("", w),
             ]
-            # 按钮组 — 选中 [text]，非选中 text，间距 2
             parts = []
             for j, btn in enumerate(btns):
                 if j == nav.index:
@@ -214,8 +210,7 @@ def run_auction_sniper(renderer: Renderer) -> None:
                                  f"{C.BOLD}{C.WHITE}]{C.RESET}")
                 else:
                     parts.append(f"{C.TEAL}{btn}{C.RESET}")
-            btn_line = "  ".join(parts)
-            lines.append(W.line(btn_line, w))
+            lines.append(W.line("  ".join(parts), w))
             lines.append(W.divider("", w))
             lines.append(W.line(f"{C.GRAY}Esc 返回主菜单{C.RESET}", w))
             lines.append(W.bottom_border(w))
@@ -231,7 +226,6 @@ def run_auction_sniper(renderer: Renderer) -> None:
                 if raw in (b"\xe0", b"\x00"):
                     ext = msvcrt.getch()
                     if raw == b"\x00" and ext == b";":
-                        # F2 — 快捷重新配置
                         _do_configure(renderer, cfg)
                         cfg = _load_config()
                         region = cfg.get("region")
@@ -310,7 +304,6 @@ def _do_configure(renderer: Renderer, cfg: dict) -> None:
     cfg["region"] = list(region)
     _save_config(cfg)
 
-    # 截取模板
     lines = [
         W.top_border("配置车辆特征", w),
         W.line(f"{C.GREEN}区域已保存: {region[2]}x{region[3]}{C.RESET}", w),
@@ -344,7 +337,6 @@ _ST_WAIT = "waiting"
 
 
 def _build_actions(confidence: float | None, found: bool) -> list[dict]:
-    """构建单次尝试的动作树。"""
     actions = [
         {"name": "Enter (搜索)", "delay": 0.0, "status": _ST_WAIT,
          "children": [
@@ -371,7 +363,6 @@ def _build_actions(confidence: float | None, found: bool) -> list[dict]:
 
 
 def _flatten_actions(actions: list[dict]) -> list[dict]:
-    """将树展平为执行序列 (保留 level 信息)。"""
     seq = []
     for act in actions:
         act["_level"] = 0
@@ -384,19 +375,17 @@ def _flatten_actions(actions: list[dict]) -> list[dict]:
 
 def _render_tree(renderer: Renderer, title: str, flat: list[dict],
                  current_idx: int, stats: dict, w: int) -> None:
-    """渲染树状运行图。"""
     lines = [W.top_border(title, w)]
     lines.append(W.line(
-        f"{C.LABEL}\u5c1d\u8bd5:{C.RESET} {C.WHITE}{stats['attempts']}"
-        f"{C.RESET}  {C.LABEL}\u53d1\u73b0:{C.RESET} "
+        f"{C.LABEL}尝试:{C.RESET} {C.WHITE}{stats['attempts']}"
+        f"{C.RESET}  {C.LABEL}发现:{C.RESET} "
         f"{C.GREEN}{stats['found']}{C.RESET}", w))
     lines.append(W.divider("", w))
 
     show_start = max(0, current_idx - 3)
     show_end = min(len(flat), current_idx + 5)
-    visible = flat[show_start:show_end]
 
-    for item in visible:
+    for item in flat[show_start:show_end]:
         level = item.get("_level", 0)
         status = item["status"]
         indent = "  " * level if level else ""
@@ -412,13 +401,11 @@ def _render_tree(renderer: Renderer, title: str, flat: list[dict],
             mark = f"{C.GRAY}\u25cb{C.RESET}"
             name_c = f"{C.GRAY}{item['name']}{C.RESET}"
 
-        delay_s = (f" {C.GRAY}{delay:.2f}s{C.RESET}"
-                   if delay > 0 else "")
-        line = f"{indent}{mark} {name_c}{delay_s}"
-        lines.append(W.line(line, w))
+        delay_s = (f" {C.GRAY}{delay:.2f}s{C.RESET}" if delay > 0 else "")
+        lines.append(W.line(f"{indent}{mark} {name_c}{delay_s}", w))
 
     lines.append(W.divider("", w))
-    lines.append(W.line(f"{C.GRAY}Esc \u505c\u6b62{C.RESET}", w))
+    lines.append(W.line(f"{C.GRAY}Esc 停止{C.RESET}", w))
     lines.append(W.bottom_border(w))
     renderer.render(lines)
 
@@ -430,12 +417,7 @@ def _render_tree(renderer: Renderer, title: str, flat: list[dict],
 def _run_snipe_loop(renderer, cfg, template, region, threshold, stats):
     drain_keyboard()
     x, y, w, h = region
-
-    # 框宽 = 树内容需要的宽度
-    tree_w = max(
-        _calc_width([], "拍卖行抢车", 36),
-        40  # 树内容最小宽度
-    )
+    tree_w = max(_calc_width([], "拍卖行抢车", 36), 40)
 
     guard = FocusGuard(
         on_pause=lambda t: _render_paused(renderer, stats, t, tree_w),
@@ -451,13 +433,11 @@ def _run_snipe_loop(renderer, cfg, template, region, threshold, stats):
             elif raw == K.ESC:
                 return
 
-        # 焦点检查
         if not guard.check_or_pause():
             return
 
         stats["attempts"] += 1
 
-        # 构建动作树 (先不判定结果)
         actions = _build_actions(None, False)
         flat = _flatten_actions(actions)
 
@@ -473,53 +453,44 @@ def _run_snipe_loop(renderer, cfg, template, region, threshold, stats):
         # ── Enter × 2 ──
         _set(step, _ST_CUR); _render(step)
         _press("enter"); _set(step, _ST_DONE)
-        step += 1  # Enter 子节点 1
+        step += 1
 
         _set(step, _ST_CUR); _render(step)
         _press("enter"); _set(step, _ST_DONE)
-        step += 1  # Enter 子节点 2
+        step += 1
 
-        # 父节点 Enter×2 完成
         _set(0, _ST_DONE)
 
         # ── 等待加载 ──
-        step = 3  # "等待加载"
+        step = 3
         _set(step, _ST_CUR); _render(step)
         time.sleep(0.8); _set(step, _ST_DONE)
 
         # ── 截图比对 ──
-        step = 4  # "截图比对"
+        step = 4
         _set(step, _ST_CUR); _render(step)
         screenshot = pyautogui.screenshot(region=(x, y, w, h))
-        scr_arr = np.array(screenshot)
-        confidence = _match_template(scr_arr, template)
+        confidence = _match_template(np.array(screenshot), template)
         _set(step, _ST_DONE)
 
-        # 重建动作树 (现在知道结果了)
         found = confidence >= threshold
         actions = _build_actions(confidence, found)
         flat = _flatten_actions(actions)
-        # 标记前 5 步 (Enter×2, 等待, 比对) 为已完成
         for i in range(5):
             _set(i, _ST_DONE)
 
         if found:
             stats["found"] += 1
-            # 购买步骤: 从 flat 索引 5 开始
-            buy_start = 5
             for i in range(4):
-                idx = buy_start + i
+                idx = 5 + i
                 _set(idx, _ST_CUR); _render(idx)
-                key_map = {0: "y", 1: "down", 2: "enter", 3: "enter"}
-                delay_map = {0: 0.2, 1: 0.1, 2: 0.3, 3: 0.5}
-                _press(key_map[i], delay_map[i])
+                _press(["y", "down", "enter", "enter"][i],
+                       [0.2, 0.1, 0.3, 0.5][i])
                 _set(idx, _ST_DONE)
         else:
-            # Esc 步骤
-            esc_idx = 5
-            _set(esc_idx, _ST_CUR); _render(esc_idx)
+            _set(5, _ST_CUR); _render(5)
             _press("esc", 0.15)
-            _set(esc_idx, _ST_DONE)
+            _set(5, _ST_DONE)
 
         _render(len(flat) - 1)
         time.sleep(0.1)
@@ -528,12 +499,10 @@ def _run_snipe_loop(renderer, cfg, template, region, threshold, stats):
 def _render_status(renderer, stats, text, color, w):
     lines = [
         W.top_border("拍卖行抢车", w),
-        W.line(f"{C.LABEL}\u72b6\u6001:{C.RESET} {color}{text}{C.RESET}", w),
+        W.line(f"{C.LABEL}状态:{C.RESET} {color}{text}{C.RESET}", w),
         W.divider("", w),
-        W.line(f"{C.LABEL}\u5c1d\u8bd5\u6b21\u6570:{C.RESET} "
-               f"{C.WHITE}{stats['attempts']}{C.RESET}", w),
-        W.line(f"{C.LABEL}\u53d1\u73b0\u8f66\u8f86:{C.RESET} "
-               f"{C.GREEN}{stats['found']}{C.RESET}", w),
+        W.line(f"{C.LABEL}尝试次数:{C.RESET} {C.WHITE}{stats['attempts']}{C.RESET}", w),
+        W.line(f"{C.LABEL}发现车辆:{C.RESET} {C.GREEN}{stats['found']}{C.RESET}", w),
         W.bottom_border(w),
     ]
     renderer.render(lines)
@@ -543,17 +512,13 @@ def _render_paused(renderer, stats, title, w):
     t = f" ({title})" if title else ""
     lines = [
         W.top_border("拍卖行抢车", w),
-        W.line(f"{C.LABEL}\u72b6\u6001:{C.RESET} "
-               f"{C.YELLOW}\u5df2\u6682\u505c{C.RESET}", w),
-        W.line(f"{C.GRAY}\u6e38\u620f\u7a97\u53e3\u672a\u805a\u7126{t}{C.RESET}", w),
+        W.line(f"{C.LABEL}状态:{C.RESET} {C.YELLOW}已暂停{C.RESET}", w),
+        W.line(f"{C.GRAY}游戏窗口未聚焦{t}{C.RESET}", w),
         W.divider("", w),
-        W.line(f"{C.LABEL}\u5c1d\u8bd5\u6b21\u6570:{C.RESET} "
-               f"{C.WHITE}{stats['attempts']}{C.RESET}", w),
-        W.line(f"{C.LABEL}\u53d1\u73b0\u8f66\u8f86:{C.RESET} "
-               f"{C.GREEN}{stats['found']}{C.RESET}", w),
+        W.line(f"{C.LABEL}尝试次数:{C.RESET} {C.WHITE}{stats['attempts']}{C.RESET}", w),
+        W.line(f"{C.LABEL}发现车辆:{C.RESET} {C.GREEN}{stats['found']}{C.RESET}", w),
         W.divider("", w),
-        W.line(f"{C.GRAY}\u5207\u56de\u6e38\u620f\u81ea\u52a8\u7ee7\u7eed | "
-               f"Esc \u505c\u6b62{C.RESET}", w),
+        W.line(f"{C.GRAY}切回游戏自动继续 | Esc 停止{C.RESET}", w),
         W.bottom_border(w),
     ]
     renderer.render(lines)

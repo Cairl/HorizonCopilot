@@ -35,7 +35,7 @@ def main() -> None:
         if key == K.ENTER:
             item = MENU_ITEMS[nav.index]
             if item["tag"] == "auction":
-                from auction import run_auction_sniper
+                from tasks.auction import run_auction_sniper
                 run_auction_sniper(renderer)
 
 

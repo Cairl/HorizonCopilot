@@ -2,13 +2,11 @@
 
 用法::
 
-    from focus import FocusGuard
+    from core.focus import FocusGuard
 
     guard = FocusGuard(on_pause=render_paused, on_resume=render_running)
     while guard.check_or_pause():
         do_work()
-        if msvcrt.kbhit() and msvcrt.getch() == K.ESC:
-            break
 """
 
 import ctypes
@@ -62,12 +60,7 @@ class FocusGuard:
         on_exit: 用户在暂停期间按 Esc 时的回调 () -> None
     """
 
-    def __init__(
-        self,
-        on_pause=None,
-        on_resume=None,
-        on_exit=None,
-    ):
+    def __init__(self, on_pause=None, on_resume=None, on_exit=None):
         self.on_pause = on_pause
         self.on_resume = on_resume
         self.on_exit = on_exit
@@ -82,7 +75,6 @@ class FocusGuard:
         if is_game_focused():
             return True
 
-        # 暂停
         if self.on_pause:
             self.on_pause(get_foreground_title())
 
@@ -91,13 +83,12 @@ class FocusGuard:
                 raw = msvcrt.getch()
                 if raw in (b"\xe0", b"\x00"):
                     msvcrt.getch()
-                elif raw == b"\x1b":  # Esc
+                elif raw == b"\x1b":
                     if self.on_exit:
                         self.on_exit()
                     return False
             time.sleep(0.3)
 
-        # 恢复
         if self.on_resume:
             self.on_resume()
         time.sleep(0.3)
