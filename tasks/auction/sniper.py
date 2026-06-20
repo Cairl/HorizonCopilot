@@ -184,8 +184,7 @@ def run_auction_sniper(renderer: Renderer) -> None:
         # ── 渲染配置页 ──
         cfg_str = (f"{C.GREEN}已配置{C.RESET} ({region[2]}x{region[3]})"
                    if has_tpl else f"{C.RED}未配置{C.RESET}")
-        btns = ["框选区域", "截取特征"] if not has_tpl else \
-               ["框选区域", "截取特征", "开始抢车"]
+        btns = ["配置特征", "开始抢车"] if has_tpl else ["配置特征"]
         nav = Navigator(n_items=len(btns))
 
         def _render_cfg():
@@ -248,24 +247,13 @@ def run_auction_sniper(renderer: Renderer) -> None:
 
         if key == K.ENTER:
             sel = nav.index
-            if sel == 0:  # 框选区域
+            if sel == 0:  # 配置特征 — 框选 + 截取一步完成
                 _do_configure(renderer, cfg)
                 cfg = _load_config()
                 region = cfg.get("region")
                 template = _load_template(region)
                 renderer.reset()
-            elif sel == 1:  # 截取特征
-                if region:
-                    _capture_template(tuple(region))
-                    template = _load_template(region)
-                    renderer.reset()
-                else:
-                    _do_configure(renderer, cfg)
-                    cfg = _load_config()
-                    region = cfg.get("region")
-                    template = _load_template(region)
-                    renderer.reset()
-            elif sel == 2 and has_tpl:  # 开始抢车
+            elif sel == 1 and has_tpl:  # 开始抢车
                 _run_snipe_loop(renderer, cfg, template, region,
                                 threshold, stats)
 
