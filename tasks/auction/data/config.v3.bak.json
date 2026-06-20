@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "features": [],
+  "steps": [
+    {
+      "name": "Enter (搜索)",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 0.05
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 0.05
+    },
+    {
+      "name": "等待加载",
+      "type": "wait",
+      "delay": 0.8
+    },
+    {
+      "name": "截图识别",
+      "type": "match",
+      "feature_type": "car_present/car_absent",
+      "delay": 0.0
+    }
+  ],
+  "settings": {
+    "global_threshold_fallback": 0.9
+  }
+}

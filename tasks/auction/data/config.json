@@ -1,9 +1,185 @@
 {
-  "region": [
-    696,
-    1972,
-    298,
-    82
+  "version": 4,
+  "slots": {
+    "car_present": {
+      "region": [
+        131,
+        1978,
+        306,
+        69
+      ],
+      "template_file": "car_present.png",
+      "threshold": 0.9
+    },
+    "car_absent": {
+      "region": [
+        146,
+        1983,
+        259,
+        59
+      ],
+      "template_file": "car_absent.png",
+      "threshold": 0.9
+    },
+    "auction_success": {
+      "region": [
+        1747,
+        966,
+        344,
+        89
+      ],
+      "template_file": "auction_success.png",
+      "threshold": 0.9
+    },
+    "auction_failure": {
+      "region": [
+        1743,
+        957,
+        349,
+        99
+      ],
+      "template_file": "auction_failure.png",
+      "threshold": 0.9
+    }
+  },
+  "steps": [
+    {
+      "name": "Enter (搜索)",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 5.0,
+      "feature_type": null,
+      "node_id": "enter_search"
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 5.0,
+      "feature_type": null,
+      "node_id": "enter"
+    },
+    {
+      "name": "等待加载",
+      "type": "wait",
+      "key": null,
+      "delay": 5.0,
+      "feature_type": null,
+      "node_id": "wait"
+    },
+    {
+      "name": "判断",
+      "type": "match",
+      "key": null,
+      "delay": 0.0,
+      "feature_type": "car_present/car_absent",
+      "node_id": "match_car",
+      "branches": [
+        {
+          "condition": "有车状态",
+          "loop": null,
+          "node_id": "branch_car_yes",
+          "steps": [
+            {
+              "name": "Y",
+              "type": "keypress",
+              "key": "y",
+              "delay": 5.0,
+              "feature_type": null,
+              "node_id": "y"
+            },
+            {
+              "name": "↓",
+              "type": "keypress",
+              "key": "down",
+              "delay": 5.0,
+              "feature_type": null,
+              "node_id": "down"
+            },
+            {
+              "name": "Enter",
+              "type": "keypress",
+              "key": "enter",
+              "delay": 5.0,
+              "feature_type": null,
+              "node_id": "enter_buy1"
+            },
+            {
+              "name": "Enter",
+              "type": "keypress",
+              "key": "enter",
+              "delay": 5.0,
+              "feature_type": null,
+              "node_id": "enter_buy2"
+            },
+            {
+              "name": "判断",
+              "type": "match",
+              "key": null,
+              "delay": 0.0,
+              "feature_type": "auction_success/auction_failure",
+              "node_id": "match_result",
+              "branches": [
+                {
+                  "condition": "抢车成功",
+                  "loop": "结束",
+                  "node_id": "branch_success",
+                  "steps": []
+                },
+                {
+                  "condition": "抢车失败",
+                  "loop": "回到①",
+                  "node_id": "branch_fail",
+                  "steps": [
+                    {
+                      "name": "Enter",
+                      "type": "keypress",
+                      "key": "enter",
+                      "delay": 5.0,
+                      "feature_type": null,
+                      "node_id": "fail_enter"
+                    },
+                    {
+                      "name": "Esc",
+                      "type": "keypress",
+                      "key": "esc",
+                      "delay": 5.0,
+                      "feature_type": null,
+                      "node_id": "fail_esc1"
+                    },
+                    {
+                      "name": "Esc",
+                      "type": "keypress",
+                      "key": "esc",
+                      "delay": 5.0,
+                      "feature_type": null,
+                      "node_id": "fail_esc2"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "condition": "无车状态",
+          "loop": "回到①",
+          "node_id": "branch_nocar",
+          "steps": [
+            {
+              "name": "Esc",
+              "type": "keypress",
+              "key": "esc",
+              "delay": 5.0,
+              "feature_type": null,
+              "node_id": "nocar_esc"
+            }
+          ]
+        }
+      ]
+    }
   ],
-  "threshold": 0.9
+  "settings": {
+    "global_threshold_fallback": 0.9
+  }
 }
