@@ -28,7 +28,7 @@ def main() -> None:
     while True:
         render_menu(nav, renderer)
         key = get_key()
-        if key == K.ESC:
+        if key in (K.ESC, K.BS):
             break
         if nav.handle(key):
             continue

@@ -83,7 +83,7 @@ class FocusGuard:
                 raw = msvcrt.getch()
                 if raw in (b"\xe0", b"\x00"):
                     msvcrt.getch()
-                elif raw == b"\x1b":
+                elif raw in (b"\x1b", b"\x08"):  # Esc / Backspace
                     if self.on_exit:
                         self.on_exit()
                     return False
