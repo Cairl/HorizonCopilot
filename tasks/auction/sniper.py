@@ -10,7 +10,6 @@
 """
 
 import json
-import msvcrt
 import time
 from pathlib import Path
 
@@ -21,6 +20,7 @@ import pyautogui
 from udlrtui import C, B, K, Renderer, Navigator, widgets as W
 from udlrtui import get_key, drain_keyboard
 from core.focus import FocusGuard
+from core.keyboard import read_key, try_read_key
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
@@ -219,29 +219,14 @@ def run_auction_sniper(renderer: Renderer) -> None:
 
         # ── 按键处理 ──
         drain_keyboard()
-        while True:
-            if msvcrt.kbhit():
-                raw = msvcrt.getch()
-                # F2: \x00 + ;
-                if raw == b"\x00":
-                    ext = msvcrt.getch()
-                    if ext == b";":
-                        _do_configure(renderer, cfg)
-                        cfg = _load_config()
-                        region = cfg.get("region")
-                        template = _load_template(region)
-                        renderer.reset()
-                        break
-                    continue
-                # 方向键: \xe0 + H/P/K/M → 转为 K 常量
-                if raw == b"\xe0":
-                    ext = msvcrt.getch()
-                    key = ext  # b"H"=UP, b"P"=DOWN 等，与 K 常量一致
-                    break
-                key = raw
-                break
-            time.sleep(0.016)
-        else:
+        key = read_key()
+
+        if key == b"\x00":  # F2
+            _do_configure(renderer, cfg)
+            cfg = _load_config()
+            region = cfg.get("region")
+            template = _load_template(region)
+            renderer.reset()
             continue
 
         if key in (K.ESC, K.BS):
@@ -420,12 +405,9 @@ def _run_snipe_loop(renderer, cfg, template, region, threshold, stats):
     )
 
     while True:
-        if msvcrt.kbhit():
-            raw = msvcrt.getch()
-            if raw in (b"\xe0", b"\x00"):
-                msvcrt.getch()
-            elif raw in (K.ESC, K.BS):
-                return
+        key = try_read_key()
+        if key is not None and key in (K.ESC, K.BS):
+            return
 
         if not guard.check_or_pause():
             return

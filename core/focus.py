@@ -13,7 +13,8 @@ import ctypes
 import ctypes.wintypes
 import time
 
-import msvcrt
+from .keyboard import try_read_key
+from udlrtui import K
 
 # ── Win32 API ─────────────────────────────────────────────
 
@@ -79,14 +80,11 @@ class FocusGuard:
             self.on_pause(get_foreground_title())
 
         while not is_game_focused():
-            if msvcrt.kbhit():
-                raw = msvcrt.getch()
-                if raw in (b"\xe0", b"\x00"):
-                    msvcrt.getch()
-                elif raw in (b"\x1b", b"\x08"):  # Esc / Backspace
-                    if self.on_exit:
-                        self.on_exit()
-                    return False
+            key = try_read_key()
+            if key is not None and key in (K.ESC, K.BS):
+                if self.on_exit:
+                    self.on_exit()
+                return False
             time.sleep(0.3)
 
         if self.on_resume:
