@@ -7,6 +7,8 @@
        - 未匹配: Esc → 重新循环
 """
 
+import ctypes
+import ctypes.wintypes
 import json
 import msvcrt
 import os
@@ -162,6 +164,39 @@ def _press(key: str, interval: float = 0.05) -> None:
     """发送按键。支持: enter, esc, y, down, f2, f3。"""
     pyautogui.press(key)
     time.sleep(interval)
+
+
+# ── 窗口焦点检测 ──────────────────────────────────────────
+
+_user32 = ctypes.windll.user32
+
+def _get_foreground_title() -> str:
+    """获取当前前台窗口标题。"""
+    hwnd = _user32.GetForegroundWindow()
+    length = _user32.GetWindowTextLengthW(hwnd)
+    if length == 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    _user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+_GAME_KEYWORDS = [
+    "forza horizon 6",
+    "极限竞速：地平线 6",
+    "极限竞速:地平线6",
+    "极限竞速：地平线6",
+    "极限竞速 地平线 6",
+    "forzahorizon6",
+]
+
+
+def _is_game_focused() -> bool:
+    """当前前台窗口是否为地平线 6。"""
+    title = _get_foreground_title().lower()
+    if not title:
+        return False
+    return any(kw in title for kw in _GAME_KEYWORDS)
 
 
 # ── 主入口 ────────────────────────────────────────────────
@@ -332,6 +367,21 @@ def _run_snipe_loop(
         ]
         renderer.render(lines)
 
+    def render_paused(title: str = "") -> None:
+        t = f" ({title})" if title else ""
+        lines = [
+            W.top_border("拍卖行抢车", W_VAL),
+            W.line(f"{C.LABEL}状态:{C.RESET} {C.YELLOW}已暂停{C.RESET}", W_VAL),
+            W.line(f"{C.GRAY}游戏窗口未聚焦{t}{C.RESET}", W_VAL),
+            W.divider("", W_VAL),
+            W.line(f"{C.LABEL}尝试次数:{C.RESET} {C.WHITE}{stats['attempts']}{C.RESET}", W_VAL),
+            W.line(f"{C.LABEL}发现车辆:{C.RESET} {C.GREEN}{stats['found']}{C.RESET}", W_VAL),
+            W.divider("", W_VAL),
+            W.line(f"{C.GRAY}切回游戏自动继续 | Esc 停止{C.RESET}", W_VAL),
+            W.bottom_border(W_VAL),
+        ]
+        renderer.render(lines)
+
     render_running()
 
     while True:
@@ -342,6 +392,23 @@ def _run_snipe_loop(
                 msvcrt.getch()
             elif raw == K.ESC:
                 return
+
+        # 检查游戏窗口焦点 — 未聚焦则暂停
+        if not _is_game_focused():
+            title = _get_foreground_title()
+            render_paused(title)
+            while not _is_game_focused():
+                if msvcrt.kbhit():
+                    raw = msvcrt.getch()
+                    if raw in (b"\xe0", b"\x00"):
+                        msvcrt.getch()
+                    elif raw == K.ESC:
+                        return
+                time.sleep(0.3)
+            # 游戏重新聚焦，恢复
+            drain_keyboard()
+            render_running("恢复运行", C.GREEN)
+            time.sleep(0.3)
 
         stats["attempts"] += 1
 
