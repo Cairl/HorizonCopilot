@@ -3,20 +3,20 @@
   "slots": {
     "car_present": {
       "region": [
-        146,
-        1984,
-        1224,
-        57
+        2156,
+        1432,
+        328,
+        70
       ],
       "template_file": "car_present.png",
       "threshold": 0.9
     },
     "car_absent": {
       "region": [
-        146,
-        1981,
-        580,
-        59
+        2158,
+        1425,
+        198,
+        73
       ],
       "template_file": "car_absent.png",
       "threshold": 0.9
@@ -47,7 +47,7 @@
       "name": "Enter (搜索)",
       "type": "keypress",
       "key": "enter",
-      "delay": 1.0,
+      "delay": 0.5,
       "feature_type": null,
       "node_id": "enter_search"
     },
@@ -55,7 +55,7 @@
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.5,
+      "delay": 0.3,
       "feature_type": null,
       "node_id": "enter"
     },
@@ -84,7 +84,7 @@
               "name": "↓",
               "type": "keypress",
               "key": "down",
-              "delay": 0.5,
+              "delay": 0.2,
               "feature_type": null,
               "node_id": "down"
             },
@@ -108,7 +108,7 @@
               "name": "判断",
               "type": "match",
               "key": null,
-              "delay": 1.0,
+              "delay": 5.0,
               "feature_type": "auction_success/auction_failure",
               "node_id": "match_result",
               "branches": [
@@ -127,7 +127,7 @@
                       "name": "Enter",
                       "type": "keypress",
                       "key": "enter",
-                      "delay": 5.0,
+                      "delay": 1.0,
                       "feature_type": null,
                       "node_id": "fail_enter"
                     },
@@ -135,7 +135,7 @@
                       "name": "Esc",
                       "type": "keypress",
                       "key": "esc",
-                      "delay": 5.0,
+                      "delay": 1.0,
                       "feature_type": null,
                       "node_id": "fail_esc1"
                     },
@@ -143,7 +143,7 @@
                       "name": "Esc",
                       "type": "keypress",
                       "key": "esc",
-                      "delay": 5.0,
+                      "delay": 1.0,
                       "feature_type": null,
                       "node_id": "fail_esc2"
                     }
