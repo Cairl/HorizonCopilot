@@ -726,7 +726,7 @@ class BaseTask(ABC):
             nav_idx += 1
 
         elif step.type == "match":
-            # ── Match row (navigable, delay editable — wait before screenshot) ──
+            # ── Match row (navigable, delay = wait before screenshot) ──
             delay_ms = int(step.delay * 1000)
             is_sel = ((not running) and (self.nav.index == nav_idx)) or \
                      (running and status == _ST_CUR)

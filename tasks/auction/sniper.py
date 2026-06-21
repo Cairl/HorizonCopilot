@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import time
 from enum import Enum
 from pathlib import Path
@@ -202,6 +203,10 @@ class AuctionTask(BaseTask):
                 node_id="enter",
             ),
             StepConfig(
+                "Enter", type="keypress", key="enter", delay=0.05,
+                node_id="enter2",
+            ),
+            StepConfig(
                 "判断",
                 type="match",
                 feature_type="car_present/car_absent",
@@ -340,12 +345,13 @@ class AuctionTask(BaseTask):
             while True:
                 ① Enter
                 ② Enter
-                ③ 截图识别(有车/无车)
+                ③ Enter
+                ④ 截图识别(有车/无车)
                    - 无车状态 → Esc → 回到①
                    - 有车状态 → 继续④
                    - 都不匹配 → Esc → 回到①
-                ④ Y → ↓ → Enter → Enter
-                ⑤ 截图识别(成功/失败)
+                ⑤ Y → ↓ → Enter → Enter
+                ⑥ 截图识别(成功/失败)
                    - 抢车成功 → break (返回 idle)
                    - 抢车失败 → Enter → Esc → Esc → 回到①
 
@@ -357,6 +363,12 @@ class AuctionTask(BaseTask):
             return
 
         drain_keyboard()
+
+        # 检查大写锁定，没开就开启（拍卖场搜索需要）
+        _caps_was_on = bool(ctypes.windll.user32.GetKeyState(0x14) & 1)
+        if not _caps_was_on:
+            pyautogui.press("capslock")
+            time.sleep(0.05)
 
         # 设置运行状态为"运行中"（红色"停止运行"）
         self._run_state = "running"
@@ -476,7 +488,10 @@ class AuctionTask(BaseTask):
                 # ── ② Enter ──
                 _press_step("enter", "enter")
 
-                # ── ③ 截图识别(有车/无车) — 倒计时等待画面稳定后截图 ──
+                # ── ③ Enter ──
+                _press_step("enter2", "enter")
+
+                # ── ④ 截图识别(有车/无车) — 倒计时等待画面稳定后截图 ──
                 _set("match_car", _ST_CUR)
                 _render()
                 _match_car_node = node_map.get("match_car")
@@ -508,13 +523,13 @@ class AuctionTask(BaseTask):
                     _dim(self._DIM_NOCAR)
                     _set("branch_car_yes", _ST_DONE)
 
-                    # ── ④ Y → ↓ → Enter → Enter ──
+                    # ── ⑤ Y → ↓ → Enter → Enter ──
                     _press_step("y", "y")
                     _press_step("down", "down")
                     _press_step("enter_buy1", "enter")
                     _press_step("enter_buy2", "enter")
 
-                    # ── ⑤ 截图识别(成功/失败) — 倒计时等待画面稳定后截图 ──
+                    # ── ⑥ 截图识别(成功/失败) — 倒计时等待画面稳定后截图 ──
                     _set("match_result", _ST_CUR)
                     _render()
                     _match_res_node = node_map.get("match_result")
