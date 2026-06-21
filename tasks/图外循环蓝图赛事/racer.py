@@ -1,4 +1,4 @@
-"""图外赛事循环 — 执行按键序列并检测比赛完成。
+"""图外循环蓝图赛事 — 执行按键序列并检测比赛完成。
 
 工作流程:
     1. 用户通过按钮选择框选区域 + 截取比赛完成特征
@@ -38,7 +38,7 @@ from core.feature_store import FeatureStore
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
 
-# ── 任务级路径 (tasks/图外赛事循环/data/) ────────────────────
+# ── 任务级路径 (tasks/图外循环蓝图赛事/data/) ────────────────────
 
 _TASK_DIR = Path(__file__).parent
 DATA_DIR = _TASK_DIR / "data"
@@ -47,7 +47,7 @@ DATA_DIR = _TASK_DIR / "data"
 # ── RaceLoop 特化定义 ─────────────────────────────────────
 
 class FeatureType(Enum):
-    """图外赛事循环任务所需的特征类型。"""
+    """图外循环蓝图赛事任务所需的特征类型。"""
 
     RACE_FINISHED = "race_finished"
     """比赛完成。"""
@@ -97,7 +97,7 @@ def _press(key: str, interval: float = 0.05) -> None:
 # ══════════════════════════════════════════════════════════
 
 class RaceLoopTask(BaseTask):
-    """图外赛事循环任务 — 执行按键序列并检测比赛完成。
+    """图外循环蓝图赛事任务 — 执行按键序列并检测比赛完成。
 
     流程::
 
@@ -110,7 +110,7 @@ class RaceLoopTask(BaseTask):
         - ``race_finished`` — 比赛完成
     """
 
-    task_name: str = "图外赛事循环"
+    task_name: str = "图外循环蓝图赛事"
     task_tag: str = "race_loop"
 
     # ── Setup ──────────────────────────────────────────────

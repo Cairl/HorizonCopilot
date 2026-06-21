@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-基于 `UdlrTui` 库构建的《极限竞速：地平线》自动化工具，目前包含拍卖场抢车和图外赛事循环两个任务。
+基于 `UdlrTui` 库构建的《极限竞速：地平线》自动化工具，目前包含拍卖场抢车和图外循环蓝图赛事两个任务。
 
 ## 依赖关系
 
@@ -35,7 +35,7 @@
 | `sniper.py` | `AuctionTask` 抢车任务实现、`FeatureType` 枚举、`SLOT_LABELS` 标签、默认步骤树、`_run_core_loop` 主循环 |
 | `data/` | 任务数据（`config.json` + 模板 PNG） |
 
-#### `tasks/图外赛事循环/` — 图外赛事循环任务
+#### `tasks/图外循环蓝图赛事/` — 图外循环蓝图赛事任务
 
 | 模块 | 职责 |
 |------|------|
@@ -47,7 +47,7 @@
 `StepConfig` 支持 `branches: list[Branch]`，每个 `Branch` 带 `condition` / `steps` / `loop`。两种结构：
 
 1. **分支树**（拍卖场抢车）：`match` 步骤下挂分支，两个分支点——有车/无车检测、成功/失败检测
-2. **扁平序列**（图外赛事循环）：`match` 步骤无分支，循环检测直到识别到才继续后续步骤
+2. **扁平序列**（图外循环蓝图赛事）：`match` 步骤无分支，循环检测直到识别到才继续后续步骤
 
 ### 步骤类型
 
@@ -88,7 +88,7 @@
 
 ## 特征库
 
-`FeatureStore` 参数化设计：槽位类型和标签由任务注入。拍卖场抢车任务使用 4 个固定槽位：`car_present` / `car_absent` / `auction_success` / `auction_failure`；图外赛事循环任务使用 1 个槽位：`race_finished`。槽位标签见各任务的 `SLOT_LABELS`，与执行图分支条件名保持一致。
+`FeatureStore` 参数化设计：槽位类型和标签由任务注入。拍卖场抢车任务使用 4 个固定槽位：`car_present` / `car_absent` / `auction_success` / `auction_failure`；图外循环蓝图赛事任务使用 1 个槽位：`race_finished`。槽位标签见各任务的 `SLOT_LABELS`，与执行图分支条件名保持一致。
 
 ## 配置
 
