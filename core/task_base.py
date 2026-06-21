@@ -78,6 +78,7 @@ class StepConfig:
     branches: list[Branch] | None = None
     node_id: str | None = None
     runtime_status: str = ""
+    runtime_remaining_ms: int | None = None
 
 
 @dataclass
@@ -403,7 +404,9 @@ class BaseTask(ABC):
             if idx == 0 and self._can_start():
                 # 启动前先激活游戏窗口，避免用户手动 Alt+Tab
                 from core.focus import activate_game_window
-                activate_game_window()
+                if not activate_game_window():
+                    # 未找到游戏窗口，拒绝启动
+                    return True
                 self.state = "running"
             elif idx >= slot_start:
                 if self._slot_action == 0:
@@ -440,11 +443,11 @@ class BaseTask(ABC):
         return missing
 
     def _adjust_step_delay(self, nav_idx: int, delta_ms: int) -> None:
-        """Adjust the delay of the navigable step at *nav_idx* by *delta_ms*.
+        """Adjust the delay of the navigable node at *nav_idx* by *delta_ms*.
 
-        Finds the :class:`StepConfig` at the given navigable index (using
-        :meth:`_iter_nav_steps`), applies the delta (clamped to ≥ 0), and
-        hot-saves the full step tree to config.
+        Finds the :class:`StepConfig` or :class:`Branch` at the given
+        navigable index (using :meth:`_iter_nav_steps`), applies the delta
+        (clamped to >= 0), and hot-saves the full step tree to config.
 
         Args:
             nav_idx: Zero-based index into the navigable steps list
@@ -550,21 +553,24 @@ class BaseTask(ABC):
 
     @classmethod
     def _iter_nav_steps(cls, steps: list[StepConfig]):
-        """Yield ``(step, nav_type)`` for navigable steps only.
+        """Yield ``(node, nav_type)`` for navigable nodes only.
 
-        Navigable steps are those whose delay value can be edited:
-        - ``keypress`` / ``click`` → ``("delay")``  (delay shown on right)
+        Navigable nodes are those whose delay value can be edited:
+        - ``keypress`` / ``click`` → ``("delay")``  (delay shown on left)
         - ``wait`` → ``("wait")``  (the wait duration)
+        - ``match`` → ``("match_delay")``  (wait before screenshot)
         - ``press`` / ``release`` → ``("delay")``  (future action types)
 
-        ``match`` steps are **not** navigable (structural only).
+        ``Branch`` is **not** navigable — it's a decision point with no
+        delay; the wait happens on the ``match`` step (before screenshot).
         """
         for s in steps:
             if s.type in ("keypress", "click", "press", "release"):
                 yield (s, "delay")
             elif s.type == "wait":
                 yield (s, "wait")
-            # match: not navigable
+            elif s.type == "match":
+                yield (s, "match_delay")
             if s.children:
                 yield from cls._iter_nav_steps(s.children)
             if s.branches:
@@ -573,7 +579,7 @@ class BaseTask(ABC):
 
     @classmethod
     def _count_nav_steps(cls, steps: list[StepConfig]) -> int:
-        """Count navigable step nodes (keypress + wait, excluding match)."""
+        """Count navigable nodes (keypress + wait + match)."""
         return sum(1 for _ in cls._iter_nav_steps(steps))
 
     @classmethod
@@ -590,9 +596,9 @@ class BaseTask(ABC):
         :meth:`_render_step_tree`, accumulating actual branch prefixes
         (not a fixed sample) so deep branches are accounted for.
 
-        ``match`` steps are not rendered as rows (they're structural only);
-        their branches are promoted to the match step's own level so the
-        condition labels appear as siblings of the surrounding steps.
+        ``match`` steps render as a plain ``截图识别`` row (no delay —
+        screenshot is instantaneous); their branches render at the
+        match step's own level with delay prefixes.
         """
         for i, step in enumerate(steps):
             is_last: bool = i == len(steps) - 1
@@ -611,8 +617,10 @@ class BaseTask(ABC):
                     f"{full_prefix}等待 {int(step.delay * 1000)} ms"
                 )
             elif step.type == "match":
-                # match row is not rendered — skip sample
-                pass
+                samples.append(
+                    f"{full_prefix}等待 {int(step.delay * 1000)} ms "
+                    f"截图识别"
+                )
             else:
                 samples.append(f"{full_prefix}{step.name}")
 
@@ -624,9 +632,7 @@ class BaseTask(ABC):
                 branch_connector: str = (
                     "\u2514\u2500 " if branch_last else "\u251c\u2500 "
                 )
-                # For match steps, branches render at the match's own level
-                # (using ``prefix``) since the match row is skipped.
-                branch_base: str = prefix if step.type == "match" else child_prefix
+                branch_base: str = child_prefix
                 branch_prefix: str = branch_base + branch_connector
                 samples.append(f"{branch_prefix}{branch.condition}")
                 branch_child_prefix: str = branch_base + (
@@ -652,10 +658,10 @@ class BaseTask(ABC):
         - ``keypress`` / ``click``: one row — ``等待 N ms  点击 KEY``
           (navigable, delay adjustable via ←→ / Shift+←→).
         - ``wait``: one row (navigable).
-        - ``match``: **no row rendered** — structural only.  Its branches
-          are promoted to the match step's own level so the condition
-          labels (e.g. 有车状态 / 无车状态) appear as siblings of the
-          surrounding steps, rendered in purple (MAUVE).
+        - ``match``: one row — ``等待 N ms 截图识别``
+          (navigable, delay adjustable via ←→ / Shift+←→).
+          Its branches render one level deeper, with condition labels
+          in purple (MAUVE).
 
         Idle mode (*running* = False):
         - Labels plain, time numbers yellow, key names blue.
@@ -694,7 +700,9 @@ class BaseTask(ABC):
             is_sel: bool = ((not running) and (self.nav.index == nav_idx)) or \
                            (running and status == _ST_CUR)
             if running:
-                content = self._runtime_click_content(status, label, delay_ms, step.key)
+                display_ms = (step.runtime_remaining_ms if status == _ST_CUR
+                              and step.runtime_remaining_ms is not None else delay_ms)
+                content = self._runtime_click_content(status, label, display_ms, step.key)
             else:
                 content = (
                     f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms "
@@ -709,16 +717,30 @@ class BaseTask(ABC):
             is_sel = ((not running) and (self.nav.index == nav_idx)) or \
                      (running and status == _ST_CUR)
             if running:
-                content = self._runtime_wait_content(status, delay_ms)
+                display_ms = (step.runtime_remaining_ms if status == _ST_CUR
+                              and step.runtime_remaining_ms is not None else delay_ms)
+                content = self._runtime_wait_content(status, display_ms)
             else:
                 content = f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
             lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
             nav_idx += 1
 
         elif step.type == "match":
-            # ── Match step: no row rendered (structural only) ──
-            # Branches are rendered at the match's own level below.
-            pass
+            # ── Match row (navigable, delay editable — wait before screenshot) ──
+            delay_ms = int(step.delay * 1000)
+            is_sel = ((not running) and (self.nav.index == nav_idx)) or \
+                     (running and status == _ST_CUR)
+            if running:
+                display_ms = (step.runtime_remaining_ms if status == _ST_CUR
+                              and step.runtime_remaining_ms is not None else delay_ms)
+                content = self._runtime_match_content(status, display_ms)
+            else:
+                content = (
+                    f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms "
+                    f"\u622a\u56fe\u8bc6\u522b"
+                )
+            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
+            nav_idx += 1
 
         else:
             # Unknown type — render name as-is
@@ -739,10 +761,7 @@ class BaseTask(ABC):
                 child, child_prefix, child_last, lines, w, nav_idx, running,
             )
 
-        # For match steps, branches render at the match's own level
-        # (using ``prefix``) since the match row is skipped.  This makes
-        # the condition labels appear as siblings of the surrounding steps.
-        branch_base: str = prefix if step.type == "match" else child_prefix
+        branch_base: str = child_prefix
 
         for bi, branch in enumerate(branches):
             branch_last: bool = bi == len(branches) - 1
@@ -750,21 +769,17 @@ class BaseTask(ABC):
                 "\u2514\u2500 " if branch_last else "\u251c\u2500 "
             )
             branch_prefix: str = branch_base + branch_connector
-            # Branch condition row — purple (MAUVE) in both idle and running
+            # Branch condition row — not navigable, no delay (decision point)
             if running:
                 b_status: str = branch.runtime_status
                 b_content = self._runtime_branch_content(b_status, branch.condition)
                 b_sel: bool = b_status == _ST_CUR
-                lines.append(W.tree_line(
-                    b_content, w, prefix=branch_prefix, selected=b_sel,
-                ))
             else:
-                lines.append(
-                    W.tree_line(
-                        f"{C.MAUVE}{branch.condition}{C.RESET}",
-                        w, prefix=branch_prefix,
-                    )
-                )
+                b_content = f"{C.MAUVE}{branch.condition}{C.RESET}"
+                b_sel = False
+            lines.append(W.tree_line(
+                b_content, w, prefix=branch_prefix, selected=b_sel,
+            ))
             # Steps inside this branch
             branch_child_prefix: str = branch_base + (
                 "   " if branch_last else "\u2502  "
@@ -806,11 +821,22 @@ class BaseTask(ABC):
         return f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
 
     @staticmethod
+    def _runtime_match_content(status: str, delay_ms: int) -> str:
+        """Build the content string for a match row in running mode.
+
+        - ``dimmed``: gray (branch not taken).
+        - other: ``等待 N ms 截图识别`` (delay = wait before screenshot).
+        """
+        if status == _ST_DIM:
+            return f"{C.GRAY}等待 {delay_ms} ms \u622a\u56fe\u8bc6\u522b{C.RESET}"
+        return f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms \u622a\u56fe\u8bc6\u522b"
+
+    @staticmethod
     def _runtime_branch_content(status: str, name: str) -> str:
         """Build the content string for a branch condition row in running mode.
 
         - ``dimmed``: gray (branch not taken).
-        - other: purple (MAUVE).
+        - other: purple (MAUVE) condition name.
         """
         if status == _ST_DIM:
             return f"{C.GRAY}{name}{C.RESET}"
@@ -896,6 +922,7 @@ class BaseTask(ABC):
         """
         for s in steps:
             s.runtime_status = ""
+            s.runtime_remaining_ms = None
             if s.children:
                 BaseTask._reset_runtime_status(s.children)
             if s.branches:

@@ -74,7 +74,7 @@ _DEFAULT_STEPS: list[dict] = [
         "name": "截图识别",
         "type": "match",
         "feature_type": "car_present/car_absent",
-        "delay": 0.0,
+        "delay": 0.1,
     },
 ]
 
@@ -205,7 +205,7 @@ class AuctionTask(BaseTask):
                 "判断",
                 type="match",
                 feature_type="car_present/car_absent",
-                delay=0.0,
+                delay=0.1,
                 node_id="match_car",
                 branches=[
                     Branch(
@@ -234,11 +234,11 @@ class AuctionTask(BaseTask):
                                 "判断",
                                 type="match",
                                 feature_type="auction_success/auction_failure",
-                                delay=0.0,
+                                delay=0.1,
                                 node_id="match_result",
                                 branches=[
                                     Branch(
-                                        "抢车成功", loop="结束",
+                                        "\u62a2\u8f66\u6210\u529f", loop="\u7ed3\u675f",
                                         node_id="branch_success",
                                     ),
                                     Branch(
@@ -380,6 +380,17 @@ class AuctionTask(BaseTask):
 
         guard: FocusGuard = self._make_guard(self._tree_w)
 
+        # 等待游戏窗口完全切换到前台（SetForegroundWindow 异步生效）
+        # 最多重试 10 次，每次间隔 50ms，总计 500ms
+        _focus_ok: bool = False
+        for _ in range(10):
+            if guard.check():
+                _focus_ok = True
+                break
+            time.sleep(0.05)
+        if not _focus_ok:
+            return
+
         def _set(k: str, status: str) -> None:
             node = node_map.get(k)
             if node is not None:
@@ -394,16 +405,45 @@ class AuctionTask(BaseTask):
         def _render() -> None:
             self.render_idle(run_state=self._run_state)
 
+        def _countdown(node, delay: float) -> None:
+            """倒计时显示剩余毫秒，每 50ms 更新渲染。
+
+            用 ``time.monotonic`` 计算实际经过时间，确保总等待时间
+            不受 sleep 精度影响。期间检查用户中断和焦点丢失。
+            """
+            if delay <= 0:
+                return
+            total_ms: int = int(delay * 1000)
+            step_ms: int = 50
+            start: float = time.monotonic()
+            deadline: float = start + delay
+            while True:
+                elapsed: float = time.monotonic() - start
+                remaining: int = max(0, total_ms - int(elapsed * 1000))
+                if remaining <= 0:
+                    break
+                node.runtime_remaining_ms = remaining
+                _render()
+                to_deadline: float = deadline - time.monotonic()
+                if to_deadline <= 0:
+                    break
+                time.sleep(min(step_ms / 1000.0, to_deadline))
+                key = try_get_key()
+                if key is not None and key in (K.ESC, K.BS, K.ENTER):
+                    raise _PauseExit()
+                if not guard.check():
+                    raise _PauseExit()
+            node.runtime_remaining_ms = None
+
         def _press_step(k: str, key_name: str) -> None:
-            """标记点击 *k* 为当前→渲染→睡眠延迟→按键→标记完成。
+            """标记点击 *k* 为当前→倒计时渲染→按键→标记完成。
 
             按键前检查焦点，失焦则抛出 :class:`_PauseExit` 终止运行。
             """
             node = node_map.get(k)
             delay: float = node.delay if node is not None else 0.05
             _set(k, _ST_CUR)
-            _render()
-            time.sleep(delay)
+            _countdown(node, delay)
             # 按键前检查焦点，避免失焦时把按键送到控制台
             if not guard.check():
                 raise _PauseExit()
@@ -436,9 +476,12 @@ class AuctionTask(BaseTask):
                 # ── ② Enter ──
                 _press_step("enter", "enter")
 
-                # ── ③ 截图识别(有车/无车) ──
+                # ── ③ 截图识别(有车/无车) — 倒计时等待画面稳定后截图 ──
                 _set("match_car", _ST_CUR)
                 _render()
+                _match_car_node = node_map.get("match_car")
+                if _match_car_node is not None:
+                    _countdown(_match_car_node, _match_car_node.delay)
 
                 key = try_get_key()
                 if key is not None and key in (K.ESC, K.BS, K.ENTER):
@@ -462,8 +505,8 @@ class AuctionTask(BaseTask):
                 if present_conf >= fallback:
                     # 有车状态 → 继续④
                     _set("match_car", _ST_DONE)
-                    _set("branch_car_yes", _ST_DONE)
                     _dim(self._DIM_NOCAR)
+                    _set("branch_car_yes", _ST_DONE)
 
                     # ── ④ Y → ↓ → Enter → Enter ──
                     _press_step("y", "y")
@@ -471,9 +514,12 @@ class AuctionTask(BaseTask):
                     _press_step("enter_buy1", "enter")
                     _press_step("enter_buy2", "enter")
 
-                    # ── ⑤ 截图识别(成功/失败) ──
+                    # ── ⑤ 截图识别(成功/失败) — 倒计时等待画面稳定后截图 ──
                     _set("match_result", _ST_CUR)
                     _render()
+                    _match_res_node = node_map.get("match_result")
+                    if _match_res_node is not None:
+                        _countdown(_match_res_node, _match_res_node.delay)
 
                     key = try_get_key()
                     if key is not None and key in (K.ESC, K.BS, K.ENTER):
@@ -485,8 +531,8 @@ class AuctionTask(BaseTask):
                     if success_conf >= fallback:
                         # 抢车成功 → 结束
                         _set("match_result", _ST_DONE)
-                        _set("branch_success", _ST_DONE)
                         _dim(self._DIM_FAIL)
+                        _set("branch_success", _ST_DONE)
                         self.stats["found"] += 1
                         _render()
                         time.sleep(1.5)
@@ -495,8 +541,8 @@ class AuctionTask(BaseTask):
                     elif fail_conf >= fallback:
                         # 抢车失败 → Enter → Esc → Esc → 回到①
                         _set("match_result", _ST_DONE)
-                        _set("branch_fail", _ST_DONE)
                         _dim(self._DIM_SUCCESS)
+                        _set("branch_fail", _ST_DONE)
                         _press_step("fail_enter", "enter")
                         _press_step("fail_esc1", "esc")
                         _press_step("fail_esc2", "esc")

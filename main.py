@@ -93,11 +93,13 @@ def render_menu(nav: Navigator, renderer: Renderer, tasks: list[dict]) -> None:
     """
     w_val: int = 32
     lines: list[str] = [W.top_border("HorizonCopilot", w_val)]
+    lines.append(W.line("", w_val))
     for i, item in enumerate(tasks):
         label = f"{C.WHITE}{item['label']}{C.RESET}"
         lines.append(
             W.line_sel(label, w_val) if nav.index == i else W.line(label, w_val)
         )
+    lines.append(W.line("", w_val))
     lines.append(W.bottom_border(w_val))
     renderer.render(lines)
 

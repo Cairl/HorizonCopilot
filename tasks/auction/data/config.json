@@ -47,7 +47,7 @@
       "name": "Enter (搜索)",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.5,
+      "delay": 1.0,
       "feature_type": null,
       "node_id": "enter_search"
     },
@@ -55,7 +55,7 @@
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.15,
+      "delay": 0.5,
       "feature_type": null,
       "node_id": "enter"
     },
@@ -63,7 +63,7 @@
       "name": "判断",
       "type": "match",
       "key": null,
-      "delay": 0.0,
+      "delay": 1.0,
       "feature_type": "car_present/car_absent",
       "node_id": "match_car",
       "branches": [
@@ -76,7 +76,7 @@
               "name": "Y",
               "type": "keypress",
               "key": "y",
-              "delay": 5.0,
+              "delay": 0.1,
               "feature_type": null,
               "node_id": "y"
             },
@@ -84,7 +84,7 @@
               "name": "↓",
               "type": "keypress",
               "key": "down",
-              "delay": 5.0,
+              "delay": 0.5,
               "feature_type": null,
               "node_id": "down"
             },
@@ -92,7 +92,7 @@
               "name": "Enter",
               "type": "keypress",
               "key": "enter",
-              "delay": 5.0,
+              "delay": 0.5,
               "feature_type": null,
               "node_id": "enter_buy1"
             },
@@ -100,7 +100,7 @@
               "name": "Enter",
               "type": "keypress",
               "key": "enter",
-              "delay": 5.0,
+              "delay": 0.2,
               "feature_type": null,
               "node_id": "enter_buy2"
             },
@@ -108,7 +108,7 @@
               "name": "判断",
               "type": "match",
               "key": null,
-              "delay": 0.0,
+              "delay": 1.0,
               "feature_type": "auction_success/auction_failure",
               "node_id": "match_result",
               "branches": [

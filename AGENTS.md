@@ -49,19 +49,22 @@
 | `keypress` / `click` | 点击 | 是 | 完整按下抬起动作，延迟显示在左侧（`等待 N ms 点击 X`） |
 | `press` | 按下 | 是 | 预留，仅按下 |
 | `release` | 抬起 | 是 | 预留，仅抬起 |
-| `match` | 判断 | 否 | 结构性节点，**不渲染行**，分支提升到 match 自身层级 |
+| `wait` | 等待 | 是 | 纯等待步骤（`等待 N ms`） |
+| `match` | 判断 | 是 | 截图识别步骤（`等待 N ms 截图识别`），延迟为截图前等待画面稳定的时间 |
+| `Branch` | — | 否 | 分支条件行，渲染为纯条件名（如`有车状态`），紫色（MAUVE）显示，不可导航——判定后直接操作 |
 
 ### 导航与编辑
 
-- `_iter_nav_steps` 只产出可导航步骤（keypress/click/press/release），`match` 被跳过
+- `_iter_nav_steps` 产出所有可导航节点：`keypress`/`click`/`press`/`release`（delay）、`wait`（wait）、`match`（match_delay）。`Branch` 不可导航——它是判定结果，无需等待
 - 光标停在可导航行上，←→ 直接调整延迟（每次 ±10ms），Shift+←→ 以 1000ms 为单位调整
 - 上下键划走即可离开，无需 Enter 确认 / Esc 取消
 - 调整后立即热保存到 config（序列化整棵树写回）
-- `match` 步骤不渲染行，其分支（如 有车状态 / 无车状态）提升到 match 自身层级，以紫色（MAUVE）显示
+- `match` 步骤渲染为「等待 N ms 截图识别」，延迟为截图前等待画面稳定的时间。其分支条件行（如 有车状态 / 无车状态）渲染为纯条件名，以紫色（MAUVE）显示
+- 运行时 `match` 步骤通过 `_countdown` 倒计时显示剩余毫秒，倒计时结束后瞬时截图判定
 
 ### 运行时状态
 
-`_build_node_map` 构建 `node_id → StepConfig/Branch` 映射，`_run_core_loop` 通过 `node_id` 寻址更新 `runtime_status`。运行态用光标高亮（`›` + 背景高亮）表示当前步骤，未走的分支整组置灰（`_ST_DIM`）。
+`_build_node_map` 构建 `node_id → StepConfig/Branch` 映射，`_run_core_loop` 通过 `node_id` 寻址更新 `runtime_status`。运行态用光标高亮（`›` + 背景高亮）表示当前步骤，未走的分支整组置灰（`_ST_DIM`）。`match` 步骤通过 `_countdown` 倒计时等待画面稳定后截图，`keypress` 步骤通过 `_countdown` 倒计时等待后按键。
 
 ## 焦点守卫
 
