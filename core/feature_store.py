@@ -3,7 +3,7 @@
 管理一组 :class:`FeatureSlot` 实例，支持磁盘持久化（v4 JSON 格式）、
 模板图片加载、以及单槽位模板匹配。
 
-与 auction 特化代码解耦：槽位类型和标签由构造参数注入，各任务自行定义。
+与各任务特化代码解耦：槽位类型和标签由构造参数注入，各任务自行定义。
 
 用法::
 
@@ -247,7 +247,13 @@ class FeatureStore:
             if slot.template_file:
                 tpl_path = self.data_dir / slot.template_file
                 if tpl_path.exists():
-                    img = cv2.imread(str(tpl_path))
+                    # 使用 np.fromfile + cv2.imdecode 替代 cv2.imread，
+                    # 解决 OpenCV 在 Windows 上不支持中文路径的问题
+                    try:
+                        img_array = np.fromfile(str(tpl_path), dtype=np.uint8)
+                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    except Exception:
+                        img = None
                     if img is not None:
                         slot.template_image = cv2.cvtColor(
                             img, cv2.COLOR_BGR2RGB

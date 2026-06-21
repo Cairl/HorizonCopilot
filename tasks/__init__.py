@@ -19,7 +19,7 @@ def discover_tasks() -> list[dict]:
 
         task_info = {
             "label": "拍卖场抢车",
-            "tag": "auction",
+            "tag": "拍卖场抢车",
             "task_class": AuctionTask,
         }
 

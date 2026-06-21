@@ -53,9 +53,12 @@ class StepConfig:
 
     Attributes:
         name: Human-readable label (e.g. ``"Enter (搜索)"``).
-        type: Step type — ``"keypress"`` | ``"wait"`` | ``"match"``.
-        key: :mod:`pyautogui` key name (only for ``"keypress"`` steps).
-        delay: Seconds to wait after executing this step.
+        type: Step type — ``"keypress"`` | ``"hold"`` | ``"wait"`` |
+            ``"match"``.
+        key: :mod:`pyautogui` key name (only for ``"keypress"`` and
+            ``"hold"`` steps).
+        delay: Seconds to wait after executing this step (for ``"hold"``,
+            the hold duration).
         feature_type: Feature type string for ``"match"`` steps
             (e.g. ``"car_present/car_absent"``).
         children: Optional ordered sub-steps executed after this step.
@@ -67,6 +70,8 @@ class StepConfig:
         runtime_status: Runtime-only status (``""`` / ``_ST_DONE`` /
             ``_ST_CUR`` / ``_ST_DIM``).  Reset before each run; not
             serialised to config.
+        runtime_remaining_ms: Runtime-only countdown remaining
+            milliseconds (only set during ``_ST_CUR``).  Not serialised.
     """
 
     name: str
@@ -109,6 +114,7 @@ _ACTION_LABELS: dict[str, str] = {
     "click": "点击",
     "press": "按下",
     "release": "抬起",
+    "hold": "按住",
     "wait": "等待",
     "match": "判断",
 }
@@ -193,7 +199,7 @@ class BaseTask(ABC):
         """Core automation loop — called when entering running state.
 
         This is where the main game interaction happens (e.g. the
-        auction-snipe iteration).  Should return when the loop
+        task's main iteration).  Should return when the loop
         completes or is interrupted by the user.
         """
         ...
@@ -251,7 +257,7 @@ class BaseTask(ABC):
                     self.store.load()
                     self.store.load_all_templates()
                 steps = self.get_steps()
-                self.nav.n_items = 1 + self._count_nav_steps(steps) + 4
+                self.nav.n_items = 1 + self._count_nav_steps(steps) + len(self.store)
                 self.state = "idle"
 
     # ── Idle rendering (three-area layout) ────────────────
@@ -503,7 +509,7 @@ class BaseTask(ABC):
         if success:
             self.store.save()
             self.store.load_all_templates()
-        self.nav.n_items = 1 + self._count_nav_steps(steps) + 4
+        self.nav.n_items = 1 + self._count_nav_steps(steps) + len(self.store)
         self.renderer.reset()
 
     def _delete_feature(self) -> None:
@@ -530,7 +536,7 @@ class BaseTask(ABC):
         self.store.clear_slot(slot.feature_type)
         self.store.save()
         self.store.load_all_templates()
-        self.nav.n_items = 1 + self._count_nav_steps(steps) + 4
+        self.nav.n_items = 1 + self._count_nav_steps(steps) + len(self.store)
         self.renderer.reset()
 
     # ── Tree helpers (idle execution graph) ──────────────
@@ -556,7 +562,7 @@ class BaseTask(ABC):
         """Yield ``(node, nav_type)`` for navigable nodes only.
 
         Navigable nodes are those whose delay value can be edited:
-        - ``keypress`` / ``click`` → ``("delay")``  (delay shown on left)
+        - ``keypress`` / ``click`` / ``hold`` → ``("delay")``  (delay shown on left)
         - ``wait`` → ``("wait")``  (the wait duration)
         - ``match`` → ``("match_delay")``  (wait before screenshot)
         - ``press`` / ``release`` → ``("delay")``  (future action types)
@@ -565,7 +571,7 @@ class BaseTask(ABC):
         delay; the wait happens on the ``match`` step (before screenshot).
         """
         for s in steps:
-            if s.type in ("keypress", "click", "press", "release"):
+            if s.type in ("keypress", "click", "hold", "press", "release"):
                 yield (s, "delay")
             elif s.type == "wait":
                 yield (s, "wait")
@@ -582,9 +588,24 @@ class BaseTask(ABC):
         """Count navigable nodes (keypress + wait + match)."""
         return sum(1 for _ in cls._iter_nav_steps(steps))
 
-    @classmethod
+    def _match_feature_label(self, step: StepConfig) -> str:
+        """解析 match 步骤的特征名称（用 SLOT_LABELS 映射 feature_type）。
+
+        feature_type 格式如 ``"race_finished"`` 或
+        ``"car_present/car_absent"``，映射后返回 ``"比赛完成"`` 或
+        ``"有车状态/无车状态"``。无 store 或无 feature_type 时回退
+        到 ``step.name``。
+        """
+        if not step.feature_type or self.store is None:
+            return step.name
+        parts: list[str] = step.feature_type.split("/")
+        labels: list[str] = [
+            self.store.SLOT_LABELS.get(p, p) for p in parts
+        ]
+        return "/".join(labels)
+
     def _collect_width_samples(
-        cls,
+        self,
         steps: list[StepConfig],
         prefix: str,
         samples: list[str],
@@ -596,9 +617,9 @@ class BaseTask(ABC):
         :meth:`_render_step_tree`, accumulating actual branch prefixes
         (not a fixed sample) so deep branches are accounted for.
 
-        ``match`` steps render as a plain ``截图识别`` row (no delay —
-        screenshot is instantaneous); their branches render at the
-        match step's own level with delay prefixes.
+        ``match`` steps render as ``每隔 N ms 检测 {特征名}``;
+        their branches render at the match step's own level with
+        delay prefixes.
         """
         for i, step in enumerate(steps):
             is_last: bool = i == len(steps) - 1
@@ -606,7 +627,7 @@ class BaseTask(ABC):
             full_prefix: str = prefix + connector
             child_prefix: str = prefix + ("   " if is_last else "\u2502  ")
 
-            if step.type in ("keypress", "click", "press", "release"):
+            if step.type in ("keypress", "click", "press", "release", "hold"):
                 label: str = action_label(step.type)
                 samples.append(
                     f"{full_prefix}等待 {int(step.delay * 1000)} ms "
@@ -617,15 +638,16 @@ class BaseTask(ABC):
                     f"{full_prefix}等待 {int(step.delay * 1000)} ms"
                 )
             elif step.type == "match":
+                feat_label: str = self._match_feature_label(step)
                 samples.append(
-                    f"{full_prefix}等待 {int(step.delay * 1000)} ms "
-                    f"截图识别"
+                    f"{full_prefix}每隔 {int(step.delay * 1000)} ms "
+                    f"检测 {feat_label}"
                 )
             else:
                 samples.append(f"{full_prefix}{step.name}")
 
             for child in (step.children or []):
-                cls._collect_width_samples([child], child_prefix, samples, running)
+                self._collect_width_samples([child], child_prefix, samples, running)
 
             for bi, branch in enumerate(step.branches or []):
                 branch_last: bool = bi == len((step.branches or [])) - 1
@@ -638,7 +660,7 @@ class BaseTask(ABC):
                 branch_child_prefix: str = branch_base + (
                     "   " if branch_last else "\u2502  "
                 )
-                cls._collect_width_samples(
+                self._collect_width_samples(
                     branch.steps, branch_child_prefix, samples, running,
                 )
 
@@ -658,7 +680,7 @@ class BaseTask(ABC):
         - ``keypress`` / ``click``: one row — ``等待 N ms  点击 KEY``
           (navigable, delay adjustable via ←→ / Shift+←→).
         - ``wait``: one row (navigable).
-        - ``match``: one row — ``等待 N ms 截图识别``
+        - ``match``: one row — ``每隔 N ms 检测 {特征名}``
           (navigable, delay adjustable via ←→ / Shift+←→).
           Its branches render one level deeper, with condition labels
           in purple (MAUVE).
@@ -693,7 +715,7 @@ class BaseTask(ABC):
 
         status: str = step.runtime_status if running else ""
 
-        if step.type in ("keypress", "click", "press", "release"):
+        if step.type in ("keypress", "click", "press", "release", "hold"):
             # ── Click row ──
             label: str = action_label(step.type)
             delay_ms: int = int(step.delay * 1000)
@@ -728,16 +750,17 @@ class BaseTask(ABC):
         elif step.type == "match":
             # ── Match row (navigable, delay = wait before screenshot) ──
             delay_ms = int(step.delay * 1000)
+            feat_label: str = self._match_feature_label(step)
             is_sel = ((not running) and (self.nav.index == nav_idx)) or \
                      (running and status == _ST_CUR)
             if running:
                 display_ms = (step.runtime_remaining_ms if status == _ST_CUR
                               and step.runtime_remaining_ms is not None else delay_ms)
-                content = self._runtime_match_content(status, display_ms)
+                content = self._runtime_match_content(status, display_ms, feat_label)
             else:
                 content = (
-                    f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms "
-                    f"\u622a\u56fe\u8bc6\u522b"
+                    f"每隔 {C.YELLOW}{delay_ms}{C.RESET} ms "
+                    f"检测 {feat_label}"
                 )
             lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
             nav_idx += 1
@@ -821,15 +844,17 @@ class BaseTask(ABC):
         return f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
 
     @staticmethod
-    def _runtime_match_content(status: str, delay_ms: int) -> str:
+    def _runtime_match_content(
+        status: str, delay_ms: int, feature_label: str,
+    ) -> str:
         """Build the content string for a match row in running mode.
 
         - ``dimmed``: gray (branch not taken).
-        - other: ``等待 N ms 截图识别`` (delay = wait before screenshot).
+        - other: ``每隔 N ms 检测 {特征名}`` (delay = wait before screenshot).
         """
         if status == _ST_DIM:
-            return f"{C.GRAY}等待 {delay_ms} ms \u622a\u56fe\u8bc6\u522b{C.RESET}"
-        return f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms \u622a\u56fe\u8bc6\u522b"
+            return f"{C.GRAY}每隔 {delay_ms} ms 检测 {feature_label}{C.RESET}"
+        return f"每隔 {C.YELLOW}{delay_ms}{C.RESET} ms 检测 {feature_label}"
 
     @staticmethod
     def _runtime_branch_content(status: str, name: str) -> str:

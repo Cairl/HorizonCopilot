@@ -170,7 +170,7 @@
               "name": "Esc",
               "type": "keypress",
               "key": "esc",
-              "delay": 0.0,
+              "delay": 0.01,
               "feature_type": null,
               "node_id": "nocar_esc"
             }

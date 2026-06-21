@@ -21,7 +21,7 @@ from pathlib import Path
 import pyautogui
 
 from udlrtui import K, Renderer, Navigator
-from udlrtui import drain_keyboard, try_get_key
+from udlrtui import drain_keyboard, get_key, try_get_key
 
 from core.focus import FocusGuard
 from core.task_base import (
@@ -37,7 +37,7 @@ from core.feature_store import FeatureStore
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
 
-# ── 任务级路径 (tasks/auction/data/) ──────────────────────
+# ── 任务级路径 (tasks/拍卖场抢车/data/) ──────────────────────
 
 _TASK_DIR = Path(__file__).parent
 DATA_DIR = _TASK_DIR / "data"
@@ -124,7 +124,7 @@ class AuctionTask(BaseTask):
         self.store.load_all_templates()
         self._steps_cache: list[StepConfig] = self._load_steps()
         self.nav = Navigator(
-            n_items=1 + self._count_nav_steps(self._steps_cache) + 4
+            n_items=1 + self._count_nav_steps(self._steps_cache) + len(self.store)
         )
         self.stats = {"attempts": 0, "found": 0}
         self._tree_w: int = 40
@@ -422,8 +422,51 @@ class AuctionTask(BaseTask):
 
             用 ``time.monotonic`` 计算实际经过时间，确保总等待时间
             不受 sleep 精度影响。期间检查用户中断和焦点丢失。
+
+            当 *delay* <= 0 时进入暂停模式：运行状态归位（开始按钮
+            变回"开始运行"、所有节点状态清零、光标聚焦到当前 0ms 行），
+            阻塞等待用户按 Enter 继续（Esc/Backspace 终止运行）。
             """
             if delay <= 0:
+                # 0ms = 暂停：运行状态归位（开始按钮变回"开始运行"）、
+                # 所有节点状态清零，光标聚焦到当前 0ms 行，
+                # 等待用户按 Enter 继续
+                self._run_state = "idle"
+                self._reset_runtime_status(self._steps_cache)
+                # 定位当前 node 在可导航节点列表中的索引（+1 跳过开始按钮）
+                nav_idx: int = 1
+                for i, (s, _t) in enumerate(self._iter_nav_steps(self._steps_cache)):
+                    if s is node:
+                        nav_idx = i + 1
+                        break
+                self.nav.index = nav_idx
+                _render()
+                # 暂停期间允许用户移动光标 / 调整延迟（不锁住），
+                # Enter 继续运行，Esc/Backspace 终止运行
+                steps = self._steps_cache
+                slot_start = 1 + self._count_nav_steps(steps)
+                while True:
+                    key = get_key()
+                    if key in (K.ESC, K.BS):
+                        raise _PauseExit()
+                    if key == K.ENTER:
+                        break
+                    idx = self.nav.index
+                    if key in (K.UP, K.DOWN):
+                        self.nav.handle(key)
+                        if (self.nav.index != idx
+                                and self.nav.index >= slot_start):
+                            self._slot_action = 0
+                    elif key in (K.LEFT, K.RIGHT,
+                                 K.SHIFT_LEFT, K.SHIFT_RIGHT):
+                        if 1 <= idx < slot_start:
+                            delta = (1000 if key in (K.SHIFT_LEFT,
+                                     K.SHIFT_RIGHT) else 10)
+                            sign = (-1 if key in (K.LEFT,
+                                    K.SHIFT_LEFT) else 1)
+                            self._adjust_step_delay(idx - 1, sign * delta)
+                    _render()
+                self._run_state = "running"
                 return
             total_ms: int = int(delay * 1000)
             step_ms: int = 50
