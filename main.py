@@ -23,7 +23,7 @@ from tasks import discover_tasks
 
 # ── 单实例锁 ──────────────────────────────────────────────
 
-_PID_FILE: Path = Path(tempfile.get_tempdir()) / "HorizonCopilot.pid"
+_PID_FILE: Path = Path(tempfile.gettempdir()) / "HorizonCopilot.pid"
 
 
 def _process_exists(pid: int) -> bool:

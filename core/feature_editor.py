@@ -1,8 +1,13 @@
-"""Feature editor — interactive slot template capture workflow.
+"""特征截取工作流 — 项目级通用模块。
 
-Provides :func:`capture_slot_feature` which guides the user through
-region selection and template capture for a specific feature slot.
-No type selection or naming steps needed — the slot type is predetermined.
+提供 :func:`capture_slot_feature`，引导用户完成区域选择和模板截取。
+槽位类型由调用方指定，无需类型选择或命名步骤。
+
+用法::
+
+    from core.feature_editor import capture_slot_feature
+
+    success = capture_slot_feature(renderer, store, data_dir, "car_present")
 """
 
 from __future__ import annotations
@@ -10,12 +15,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import msvcrt
+from udlrtui import C, Renderer, widgets as W
 
-from udlrtui import C, K, Renderer, widgets as W
-
-from .sniper import _select_region, _capture_template_to, _calc_width
-from .feature_store import FeatureSlot, FeatureStore
+from core.screen_capture import select_region, capture_template_to
+from core.feature_store import FeatureStore
+from core.task_base import calc_width
 
 
 def capture_slot_feature(
@@ -24,32 +28,29 @@ def capture_slot_feature(
     data_dir: Path,
     feature_type: str,
 ) -> bool:
-    """Capture a template for a specific feature slot.
+    """为指定槽位截取模板。
 
-    Workflow:
-        1. Prompt user to drag-select a screen region.
-        2. Capture the template image from the selected region.
-        3. Save it as ``{feature_type}.png`` (e.g. ``car_present.png``).
-        4. Call :meth:`store.set_slot` with the type, region, filename,
-           and threshold from settings.
+    工作流：
+        1. 提示用户拖拽框选屏幕区域。
+        2. 从选定区域截取模板图片。
+        3. 保存为 ``{feature_type}.png``。
+        4. 调用 :meth:`store.set_slot` 写入类型、区域、文件名和阈值。
 
-    No type selection or naming step is needed — the slot type is
-    predetermined by *feature_type*.
+    无需类型选择或命名步骤 — 槽位类型由 *feature_type* 预定。
 
     Args:
-        renderer: UdlrTui ``Renderer`` for terminal output.
-        store: The :class:`FeatureStore` to update the slot in.
-        data_dir: Directory where template PNGs are stored.
-        feature_type: Slot type string (e.g. ``"car_present"``).
+        renderer: UdlrTui ``Renderer``。
+        store: 要更新的 :class:`FeatureStore`。
+        data_dir: 模板 PNG 存储目录。
+        feature_type: 槽位类型字符串（如 ``"car_present"``）。
 
     Returns:
-        ``True`` if a template was captured, ``False`` if the user
-        cancelled (Esc at region selection).
+        ``True`` 截取成功，``False`` 用户取消。
     """
     label: str = store.SLOT_LABELS.get(feature_type, feature_type)
     title: str = f"截取{label}"
 
-    w: int = _calc_width(
+    w: int = calc_width(
         [f"请在屏幕上拖拽框选{label}的特征区域", "框选完毕自动截取，Esc 取消"],
         title, 36,
     )
@@ -61,14 +62,14 @@ def capture_slot_feature(
                    f"{C.GRAY}框选完毕自动截取，Esc 取消{C.RESET}")
     time.sleep(0.5)
 
-    region = _select_region()
+    region = select_region()
     if region is None:
         return False
 
     # ── Step 2: capture template ─────────────────────────
     filename: str = f"{feature_type}.png"
     filepath: Path = data_dir / filename
-    _capture_template_to(region, filepath)
+    capture_template_to(region, filepath)
 
     _render_prompt(renderer, title, w,
                    f"{C.GREEN}区域已捕获: {region[2]}x{region[3]}{C.RESET}",
@@ -82,9 +83,9 @@ def capture_slot_feature(
 
 def _render_prompt(
     renderer: Renderer, title: str, w: int,
-    line1: str, line2: str = ""
+    line1: str, line2: str = "",
 ) -> None:
-    """Render a simple two-line info panel."""
+    """渲染简单的两行提示面板。"""
     ls: list[str] = [
         W.top_border(title, w),
         W.line(line1, w),

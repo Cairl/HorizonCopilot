@@ -3,10 +3,10 @@
   "slots": {
     "car_present": {
       "region": [
-        131,
-        1978,
-        306,
-        69
+        146,
+        1984,
+        1224,
+        57
       ],
       "template_file": "car_present.png",
       "threshold": 0.9
@@ -14,8 +14,8 @@
     "car_absent": {
       "region": [
         146,
-        1983,
-        259,
+        1981,
+        580,
         59
       ],
       "template_file": "car_absent.png",
@@ -47,7 +47,7 @@
       "name": "Enter (搜索)",
       "type": "keypress",
       "key": "enter",
-      "delay": 5.0,
+      "delay": 0.5,
       "feature_type": null,
       "node_id": "enter_search"
     },
@@ -55,17 +55,9 @@
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 5.0,
+      "delay": 0.15,
       "feature_type": null,
       "node_id": "enter"
-    },
-    {
-      "name": "等待加载",
-      "type": "wait",
-      "key": null,
-      "delay": 5.0,
-      "feature_type": null,
-      "node_id": "wait"
     },
     {
       "name": "判断",
@@ -170,7 +162,7 @@
               "name": "Esc",
               "type": "keypress",
               "key": "esc",
-              "delay": 5.0,
+              "delay": 0.0,
               "feature_type": null,
               "node_id": "nocar_esc"
             }

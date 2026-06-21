@@ -1,9 +1,8 @@
 """Core task framework — abstract base class for all automation tasks.
 
-Provides :class:`FeatureType` enum, :class:`StepConfig` dataclass,
-:func:`match_feature_slot` utility, and the :class:`BaseTask`
-abstract base class using the template method pattern for
-idle / running state management.
+Provides :class:`StepConfig` / :class:`Branch` dataclasses, :func:`calc_width`
+utility, and the :class:`BaseTask` abstract base class using the template
+method pattern for idle / running state management.
 
 Usage::
 
@@ -13,7 +12,7 @@ Usage::
 
         def _setup(self):
             self.data_dir = Path(__file__).parent / "data"
-            self.store = FeatureStore(self.data_dir)
+            self.store = FeatureStore(self.data_dir, ...)
             self.store.load()
             self.store.load_all_templates()
             self.nav = Navigator(n_items=1 + len(steps) + 4)
@@ -21,9 +20,6 @@ Usage::
             self.stats = {"attempts": 0, "found": 0}
 
         def get_steps(self) -> list[StepConfig]:
-            return [...]
-
-        def get_required_feature_types(self) -> list[FeatureType]:
             return [...]
 
         def execute_step(self, step: StepConfig) -> bool:
@@ -35,46 +31,18 @@ Usage::
 
 from __future__ import annotations
 
-import msvcrt
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Any
-
-import numpy as np
-import pyautogui
+from typing import TYPE_CHECKING
 
 from udlrtui import C, K, Renderer, Navigator, widgets as W
-from udlrtui import drain_keyboard
+from udlrtui import drain_keyboard, get_key, try_get_key
 
 from core.focus import FocusGuard
-from core.keyboard import read_key, try_read_key
 
 if TYPE_CHECKING:
-    from tasks.auction.feature_store import FeatureSlot, FeatureStore
-
-
-# ── FeatureType ────────────────────────────────────────────
-
-class FeatureType(Enum):
-    """Enumerated types for feature classification.
-
-    Each value corresponds to a distinct visual state the automation
-    needs to recognise on screen.
-    """
-
-    CAR_PRESENT = "car_present"
-    """Vehicle is present in auction search results."""
-
-    CAR_ABSENT = "car_absent"
-    """No vehicle found (empty auction result)."""
-
-    AUCTION_SUCCESS = "auction_success"
-    """Successfully purchased the vehicle."""
-
-    AUCTION_FAILURE = "auction_failure"
-    """Auction failed (outbid / timed out)."""
+    from core.feature_store import FeatureSlot, FeatureStore
 
 
 # ── StepConfig ────────────────────────────────────────────
@@ -133,23 +101,6 @@ class Branch:
     runtime_status: str = ""
 
 
-# ── Feature slot label mapping ────────────────────────────
-
-_SLOT_LABELS: dict[str, str] = {
-    "car_present": "有车状态",
-    "car_absent": "无车状态",
-    "auction_success": "抢车成功",
-    "auction_failure": "抢车失败",
-}
-
-
-def feature_type_label(type_str: str | None) -> str:
-    """Return a short Chinese label for a feature type string."""
-    if type_str is None:
-        return ""
-    return _SLOT_LABELS.get(type_str, type_str)
-
-
 # ── Action type label mapping ─────────────────────────────
 
 _ACTION_LABELS: dict[str, str] = {
@@ -176,50 +127,10 @@ def action_label(type_str: str) -> str:
     return _ACTION_LABELS.get(type_str, type_str)
 
 
-# ── match_feature_slot ────────────────────────────────────
-
-def match_feature_slot(
-    store: FeatureStore,
-    feature_type: str,
-) -> tuple[Any | None, float]:
-    """Match a single feature slot against its screen region.
-
-    Screenshots the slot's region and runs template matching against
-    its loaded template image.
-
-    Args:
-        store: :class:`~tasks.auction.feature_store.FeatureStore`
-            with loaded template images.
-        feature_type: Slot type string — one of ``"car_present"``,
-            ``"car_absent"``, ``"auction_success"``, ``"auction_failure"``.
-
-    Returns:
-        ``(slot, confidence)`` — the :class:`FeatureSlot` and its match
-        confidence, or ``(None, 0.0)`` if the slot has no template
-        or matching failed.
-    """
-    # Lazy import to avoid circular dependency (sniper imports BaseTask)
-    from tasks.auction.sniper import _match_template as _mt
-
-    slot = store.slots.get(feature_type)
-    if slot is None or not slot.has_template() or slot.region is None:
-        return None, 0.0
-
-    x, y, w, h = slot.region
-    try:
-        screenshot = pyautogui.screenshot(region=(x, y, w, h))
-        scr_np: np.ndarray = np.array(screenshot)
-        conf: float = _mt(scr_np, slot.template_image)
-        return slot, conf
-    except Exception:
-        return None, 0.0
-
-
 # ── Tree rendering constants ──────────────────────────────
 
 _ST_DONE = "done"
 _ST_CUR = "current"
-_ST_WAIT = "waiting"
 _ST_DIM = "dimmed"  # branch not taken (greyed out)
 
 
@@ -242,7 +153,7 @@ class BaseTask(ABC):
         task_name: Human-readable task name.
         task_tag: Unique task identifier (used for routing).
         renderer: UdlrTui ``Renderer`` instance.
-        store: :class:`~tasks.auction.feature_store.FeatureStore`
+        store: :class:`~core.feature_store.FeatureStore`
             (created by :meth:`_setup`).
         nav: Single Navigator for the entire idle screen
             (start button + 4 feature slots + execution steps).
@@ -272,11 +183,6 @@ class BaseTask(ABC):
         ...
 
     @abstractmethod
-    def get_required_feature_types(self) -> list[FeatureType]:
-        """Return the feature types this task needs to operate."""
-        ...
-
-    @abstractmethod
     def execute_step(self, step: StepConfig) -> bool:
         """Execute a single step.  Return ``True`` to continue, ``False`` to stop."""
         ...
@@ -303,10 +209,9 @@ class BaseTask(ABC):
         self._guard: FocusGuard | None = None
         # Per-slot action: 0 = 截取, 1 = 删除
         self._slot_action: int = 0
-        # 运行状态: "idle" / "running" / "waiting"
+        # 运行状态: "idle" / "running"
         # idle=未启动(绿色"开始运行")
         # running=运行中(红色"停止运行")
-        # waiting=游戏未聚焦(黄色"等待运行")
         self._run_state: str = "idle"
 
     # ── Main loop — template method ───────────────────────
@@ -327,7 +232,7 @@ class BaseTask(ABC):
         while True:
             if self.state == "idle":
                 self.render_idle()
-                key: bytes = read_key()
+                key: bytes = get_key()
                 handled: bool = self.handle_idle_key(key)
                 if not handled:
                     # handle_idle_key returned False → exit requested
@@ -363,7 +268,6 @@ class BaseTask(ABC):
 
         - ``"idle"``    → 绿色 "开始运行"，光标可移动，执行图可编辑
         - ``"running"`` → 红色 "停止运行"，光标固定在按钮上，执行图锁定
-        - ``"waiting"`` → 黄色 "等待运行"，光标固定在按钮上，执行图锁定
 
         The layout adapts to the terminal width automatically.
         """
@@ -377,8 +281,7 @@ class BaseTask(ABC):
         # ── Build sample strings for width calculation ──
         # Collect actual tree prefixes (not a fixed sample) so deep
         # branches don't get truncated.  Running mode adds a "✓ " mark.
-        btn_label: str = {"idle": "开始运行", "running": "停止运行",
-                          "waiting": "等待运行"}.get(run_state, "开始运行")
+        btn_label: str = {"idle": "开始运行", "running": "停止运行"}.get(run_state, "开始运行")
         width_samples: list[str] = [btn_label]
         self._collect_width_samples(steps, "", width_samples, running=running)
         for slot in self.store:
@@ -388,7 +291,7 @@ class BaseTask(ABC):
             width_samples.append(
                 f"{label} [截取] [删除]"
             )
-        w: int = self._calc_width(width_samples, self.task_name, 42)
+        w: int = calc_width(width_samples, self.task_name, 42)
 
         lines: list[str] = [W.top_border(self.task_name, w)]
         lines.append(W.line("", w))
@@ -396,13 +299,16 @@ class BaseTask(ABC):
         # ── Area B: Start button ──
         # idle=绿色"开始运行"(光标可移动)
         # running=红色"停止运行"(光标固定)
-        # waiting=黄色"等待运行"(光标固定)
         btn_color: str = {
-            "idle": C.GREEN, "running": C.RED, "waiting": C.YELLOW,
+            "idle": C.GREEN, "running": C.RED,
         }.get(run_state, C.GREEN)
         btn_text: str = f"{btn_color}{C.BOLD}{btn_label}{C.RESET}"
-        if running or self.nav.index == 0:
-            lines.append(W.line_bg(btn_text, w))
+        if running:
+            # 运行态：光标固定在按钮上，显示 › 指针表示可交互（Enter 终止运行）
+            lines.append(W.line_bg(btn_text, w, pointer=True))
+        elif self.nav.index == 0:
+            # idle 选中态：显示 › 指针
+            lines.append(W.line_bg(btn_text, w, pointer=True))
         else:
             lines.append(W.line(btn_text, w))
 
@@ -433,16 +339,17 @@ class BaseTask(ABC):
                 slot.feature_type, slot.feature_type
             )
             cap_color: str = C.GREEN if slot.has_template() else C.YELLOW
-            cap_b = f"[{C.BOLD}{C.WHITE}\u622a\u53d6{C.RESET}]"
+            # 选中态：保留原色 + 加粗（不覆盖为白色）
+            cap_b = f"[{C.BOLD}{cap_color}\u622a\u53d6{C.RESET}]"
             cap_g = f" {cap_color}\u622a\u53d6{C.RESET} "
-            dlt_b = f"[{C.BOLD}{C.WHITE}\u5220\u9664{C.RESET}]"
+            dlt_b = f"[{C.BOLD}{C.RED}\u5220\u9664{C.RESET}]"
             dlt_g = f" {C.RED}\u5220\u9664{C.RESET} "
             # 运行时光标固定在开始按钮，特征库行不会被选中
             if (not running) and self.nav.index == nav_idx:
                 cap = cap_b if self._slot_action == 0 else cap_g
                 dlt = dlt_b if self._slot_action == 1 else dlt_g
                 row: str = f"{label} {cap}{dlt}"
-                lines.append(W.line_sel(row, w))
+                lines.append(W.line_bg(row, w, pointer=True))
             else:
                 row = f"{label} {cap_g}{dlt_g}"
                 lines.append(W.line(row, w))
@@ -494,6 +401,9 @@ class BaseTask(ABC):
         # ── Enter: start / execute slot action ──
         if key == K.ENTER:
             if idx == 0 and self._can_start():
+                # 启动前先激活游戏窗口，避免用户手动 Alt+Tab
+                from core.focus import activate_game_window
+                activate_game_window()
                 self.state = "running"
             elif idx >= slot_start:
                 if self._slot_action == 0:
@@ -578,7 +488,7 @@ class BaseTask(ABC):
         slot = slots_list[slot_idx]
 
         # Lazy import to avoid circular dependency
-        from tasks.auction.feature_editor import capture_slot_feature
+        from core.feature_editor import capture_slot_feature
 
         data_dir = getattr(self, "data_dir", None)
         if data_dir is None:
@@ -680,14 +590,10 @@ class BaseTask(ABC):
         :meth:`_render_step_tree`, accumulating actual branch prefixes
         (not a fixed sample) so deep branches are accounted for.
 
-        When *running* is True, each sample includes a ``✓ `` mark prefix
-        to match the runtime rendering (which shows status icons).
-
         ``match`` steps are not rendered as rows (they're structural only);
         their branches are promoted to the match step's own level so the
         condition labels appear as siblings of the surrounding steps.
         """
-        mark: str = "\u2713 " if running else ""
         for i, step in enumerate(steps):
             is_last: bool = i == len(steps) - 1
             connector: str = "\u2514\u2500 " if is_last else "\u251c\u2500 "
@@ -697,18 +603,18 @@ class BaseTask(ABC):
             if step.type in ("keypress", "click", "press", "release"):
                 label: str = action_label(step.type)
                 samples.append(
-                    f"{full_prefix}{mark}等待 {int(step.delay * 1000)} ms  "
+                    f"{full_prefix}等待 {int(step.delay * 1000)} ms "
                     f"{label} {step.key.upper()}"
                 )
             elif step.type == "wait":
                 samples.append(
-                    f"{full_prefix}{mark}等待 {int(step.delay * 1000)} ms"
+                    f"{full_prefix}等待 {int(step.delay * 1000)} ms"
                 )
             elif step.type == "match":
                 # match row is not rendered — skip sample
                 pass
             else:
-                samples.append(f"{full_prefix}{mark}{step.name}")
+                samples.append(f"{full_prefix}{step.name}")
 
             for child in (step.children or []):
                 cls._collect_width_samples([child], child_prefix, samples, running)
@@ -722,7 +628,7 @@ class BaseTask(ABC):
                 # (using ``prefix``) since the match row is skipped.
                 branch_base: str = prefix if step.type == "match" else child_prefix
                 branch_prefix: str = branch_base + branch_connector
-                samples.append(f"{branch_prefix}{mark}{branch.condition}")
+                samples.append(f"{branch_prefix}{branch.condition}")
                 branch_child_prefix: str = branch_base + (
                     "   " if branch_last else "\u2502  "
                 )
@@ -753,13 +659,14 @@ class BaseTask(ABC):
 
         Idle mode (*running* = False):
         - Labels plain, time numbers yellow, key names blue.
-        - Selected rows use background highlight.
+        - Selected rows use background highlight + ``›`` pointer.
 
         Running mode (*running* = True):
-        - Each row prefixed with a status icon (✓ / ▶ / · / ○).
-        - ``runtime_status`` drives colours: done=normal, current=bold,
-          dimmed=all-gray, waiting=normal.
-        - No nav selection.
+        - ``current`` step uses background highlight + ``›`` pointer
+          (same as idle selected) to indicate progress.
+        - ``done`` steps render normally (no mark).
+        - ``dimmed`` steps (branch not taken) render in gray.
+        - No nav selection (nav index ignored).
 
         Args:
             step: Current step node.
@@ -784,30 +691,28 @@ class BaseTask(ABC):
             # ── Click row ──
             label: str = action_label(step.type)
             delay_ms: int = int(step.delay * 1000)
-            is_sel: bool = (not running) and (self.nav.index == nav_idx)
+            is_sel: bool = ((not running) and (self.nav.index == nav_idx)) or \
+                           (running and status == _ST_CUR)
             if running:
                 content = self._runtime_click_content(status, label, delay_ms, step.key)
             else:
                 content = (
-                    f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms  "
+                    f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms "
                     f"{label} {C.BLUE}{step.key.upper()}{C.RESET}"
                 )
-            mark: str = self._status_mark(status) if running else ""
-            row_text: str = f"{mark} {content}" if running else content
-            lines.append(W.tree_line(row_text, w, prefix=full_prefix, selected=is_sel))
+            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
             nav_idx += 1
 
         elif step.type == "wait":
             # ── Wait row ──
             delay_ms = int(step.delay * 1000)
-            is_sel = (not running) and (self.nav.index == nav_idx)
+            is_sel = ((not running) and (self.nav.index == nav_idx)) or \
+                     (running and status == _ST_CUR)
             if running:
                 content = self._runtime_wait_content(status, delay_ms)
             else:
                 content = f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
-            mark = self._status_mark(status) if running else ""
-            row_text = f"{mark} {content}" if running else content
-            lines.append(W.tree_line(row_text, w, prefix=full_prefix, selected=is_sel))
+            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
             nav_idx += 1
 
         elif step.type == "match":
@@ -821,9 +726,8 @@ class BaseTask(ABC):
                 content = self._runtime_plain_content(status, step.name)
             else:
                 content = step.name
-            mark = self._status_mark(status) if running else ""
-            row_text = f"{mark} {content}" if running else content
-            lines.append(W.tree_line(row_text, w, prefix=full_prefix))
+            is_sel = running and status == _ST_CUR
+            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
 
         # ── Children and branches ──
         children: list[StepConfig] = step.children or []
@@ -850,9 +754,9 @@ class BaseTask(ABC):
             if running:
                 b_status: str = branch.runtime_status
                 b_content = self._runtime_branch_content(b_status, branch.condition)
-                b_mark = self._status_mark(b_status)
+                b_sel: bool = b_status == _ST_CUR
                 lines.append(W.tree_line(
-                    f"{b_mark} {b_content}", w, prefix=branch_prefix,
+                    b_content, w, prefix=branch_prefix, selected=b_sel,
                 ))
             else:
                 lines.append(
@@ -881,15 +785,16 @@ class BaseTask(ABC):
     ) -> str:
         """Build the content string for a click row in running mode.
 
-        - ``dimmed``: all gray.
-        - other: labels plain, time yellow, key blue; ``current`` adds bold.
+        - ``dimmed``: all gray (branch not taken).
+        - other: labels plain, time yellow, key blue.
+        - ``current`` highlighting is handled by ``tree_line(selected=True)``
+          in the caller, not by content styling.
         """
         key_disp = (key_name or "").upper()
         if status == _ST_DIM:
-            return f"{C.GRAY}等待 {delay_ms} ms  {label} {key_disp}{C.RESET}"
-        bold = C.BOLD if status == _ST_CUR else ""
+            return f"{C.GRAY}等待 {delay_ms} ms {label} {key_disp}{C.RESET}"
         return (
-            f"{bold}等待 {C.YELLOW}{delay_ms}{C.RESET}{bold} ms  "
+            f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms "
             f"{label} {C.BLUE}{key_disp}{C.RESET}"
         )
 
@@ -898,28 +803,25 @@ class BaseTask(ABC):
         """Build the content string for a wait row in running mode."""
         if status == _ST_DIM:
             return f"{C.GRAY}等待 {delay_ms} ms{C.RESET}"
-        bold = C.BOLD if status == _ST_CUR else ""
-        return f"{bold}等待 {C.YELLOW}{delay_ms}{C.RESET}{bold} ms"
+        return f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
 
     @staticmethod
     def _runtime_branch_content(status: str, name: str) -> str:
         """Build the content string for a branch condition row in running mode.
 
         - ``dimmed``: gray (branch not taken).
-        - other: purple (MAUVE); ``current`` adds bold.
+        - other: purple (MAUVE).
         """
         if status == _ST_DIM:
             return f"{C.GRAY}{name}{C.RESET}"
-        bold = C.BOLD if status == _ST_CUR else ""
-        return f"{bold}{C.MAUVE}{name}{C.RESET}"
+        return f"{C.MAUVE}{name}{C.RESET}"
 
     @staticmethod
     def _runtime_plain_content(status: str, name: str) -> str:
         """Build the content string for a plain row in running mode."""
         if status == _ST_DIM:
             return f"{C.GRAY}{name}{C.RESET}"
-        bold = C.BOLD if status == _ST_CUR else ""
-        return f"{bold}{name}{C.RESET}"
+        return name
 
     @staticmethod
     def _step_to_dict(step: StepConfig) -> dict:
@@ -1022,55 +924,30 @@ class BaseTask(ABC):
                         mapping[b.node_id] = b
                     BaseTask._build_node_map(b.steps, mapping)
 
-    @staticmethod
-    def _status_mark(status: str) -> str:
-        """Return the coloured status icon for a runtime status value.
-
-        - ``done``    → green ✓
-        - ``current`` → white bold ▶
-        - ``dimmed``  → gray ·
-        - other/empty → gray ○
-        """
-        if status == _ST_DONE:
-            return f"{C.GREEN}\u2713{C.RESET}"
-        if status == _ST_CUR:
-            return f"{C.WHITE}{C.BOLD}\u25b6{C.RESET}"
-        if status == _ST_DIM:
-            return f"{C.GRAY}\u00b7{C.RESET}"  # ·
-        return f"{C.GRAY}\u25cb{C.RESET}"  # ○
-
-    @staticmethod
-    def _calc_width(
-        content_lines: list[str],
-        title: str,
-        min_w: int = 32,
-    ) -> int:
-        """Calculate the widest display width among content lines and title."""
-        from udlrtui import display_width
-        max_w: int = display_width(title) + 6
-        for line in content_lines:
-            max_w = max(max_w, display_width(line))
-        return max(max_w + 6, min_w)
-
     # ── Focus guard integration ───────────────────────────
 
     def _make_guard(
         self,
         tree_w: int,
     ) -> FocusGuard:
-        """Create a :class:`FocusGuard` with pause/resume callbacks.
+        """Create a :class:`FocusGuard` for失焦即终止运行。
 
-        不再渲染单独的暂停界面，而是通过 ``_run_state`` 切换开始按钮
-        的颜色和文字（黄色"等待运行" / 红色"停止运行"），保持 idle
-        三区域布局不变。
+        失焦时调用 ``on_exit`` 回调（这里无额外操作，终止由
+        :meth:`_run_core_loop` 的返回值处理）。
         """
+        return FocusGuard()
 
-        def on_pause(title: str) -> None:
-            self._run_state = "waiting"
-            self.render_idle(run_state="waiting")
 
-        def on_resume() -> None:
-            self._run_state = "running"
-            self.render_idle(run_state="running")
+# ── Module-level utilities ────────────────────────────────
 
-        return FocusGuard(on_pause=on_pause, on_resume=on_resume)
+def calc_width(
+    content_lines: list[str],
+    title: str,
+    min_w: int = 32,
+) -> int:
+    """Calculate the widest display width among content lines and title."""
+    from udlrtui import display_width
+    max_w: int = display_width(title) + 6
+    for line in content_lines:
+        max_w = max(max_w, display_width(line))
+    return max(max_w + 6, min_w)

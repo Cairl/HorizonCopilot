@@ -8,36 +8,30 @@
     3. 实时树状运行图，高亮当前步骤
     4. 游戏失焦自动暂停
 
-依赖 :mod:`core.task_base` 的 :class:`BaseTask` 框架和 :class:`FeatureType`。
+依赖 :mod:`core.task_base` 的 :class:`BaseTask` 框架和 :class:`StepConfig`。
 """
 
 from __future__ import annotations
 
-import json
 import time
+from enum import Enum
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pyautogui
 
-from udlrtui import C, B, K, Renderer, Navigator, widgets as W
-from udlrtui import drain_keyboard
-from core.focus import FocusGuard
-from core.keyboard import read_key, try_read_key
+from udlrtui import K, Renderer, Navigator
+from udlrtui import drain_keyboard, try_get_key
 
-from .feature_store import FeatureSlot, FeatureStore
+from core.focus import FocusGuard
 from core.task_base import (
     BaseTask,
     Branch,
-    FeatureType,
     StepConfig,
-    match_feature_slot,
     _ST_DONE,
     _ST_CUR,
-    _ST_WAIT,
     _ST_DIM,
 )
+from core.feature_store import FeatureStore
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
@@ -46,184 +40,55 @@ pyautogui.PAUSE = 0
 
 _TASK_DIR = Path(__file__).parent
 DATA_DIR = _TASK_DIR / "data"
-CONFIG_FILE = DATA_DIR / "config.json"
-TEMPLATE_FILE = DATA_DIR / "template.png"
-
-# ── 默认配置 ──────────────────────────────────────────────
-
-_DEFAULTS = {"region": None, "threshold": 0.90}
 
 
-# ── 配置 (v1/v2 兼容，由 FeatureStore 管理) ───────────────
+# ── Auction 特化定义 ──────────────────────────────────────
 
-def _load_config() -> dict:
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return dict(_DEFAULTS)
+class FeatureType(Enum):
+    """拍卖场抢车任务所需的特征类型。"""
 
+    CAR_PRESENT = "car_present"
+    """搜索结果有车。"""
 
-def _save_config(cfg: dict) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    CAR_ABSENT = "car_absent"
+    """搜索结果无车。"""
 
+    AUCTION_SUCCESS = "auction_success"
+    """购买成功。"""
 
-# ── 区域选择器 ────────────────────────────────────────────
-
-def _select_region() -> tuple[int, int, int, int] | None:
-    """全屏覆盖，用户拖拽框选区域。返回 (x, y, w, h)。"""
-    import tkinter as tk
-
-    try:
-        import ctypes as _ct
-        _ct.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        pass
-
-    root = tk.Tk()
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
-    root.destroy()
-
-    screenshot = pyautogui.screenshot()
-    result = {}
-
-    win = tk.Tk()
-    win.attributes("-fullscreen", True)
-    win.attributes("-topmost", True)
-    win.overrideredirect(True)
-    win.geometry(f"{sw}x{sh}+0+0")
-
-    from PIL import ImageTk
-    bg_img = ImageTk.PhotoImage(screenshot)
-    canvas = tk.Canvas(win, width=sw, height=sh, highlightthickness=0,
-                       cursor="cross")
-    canvas.pack(fill="both", expand=True)
-    canvas.create_image(0, 0, anchor="nw", image=bg_img)
-
-    state = {"sx": 0, "sy": 0, "rect": None}
-
-    def on_press(e):
-        state["sx"], state["sy"] = e.x, e.y
-        if state["rect"]:
-            canvas.delete(state["rect"])
-            state["rect"] = None
-
-    def on_drag(e):
-        if state["rect"]:
-            canvas.delete(state["rect"])
-        state["rect"] = canvas.create_rectangle(
-            state["sx"], state["sy"], e.x, e.y,
-            outline="#89b4fa", width=3, dash=(6, 4))
-
-    def on_release(e):
-        x1, y1 = min(state["sx"], e.x), min(state["sy"], e.y)
-        x2, y2 = max(state["sx"], e.x), max(state["sy"], e.y)
-        w, h = x2 - x1, y2 - y1
-        if w >= 10 and h >= 10:
-            result["region"] = (x1, y1, w, h)
-        win.destroy()
-
-    def on_escape(e):
-        win.destroy()
-
-    canvas.bind("<ButtonPress-1>", on_press)
-    canvas.bind("<B1-Motion>", on_drag)
-    canvas.bind("<ButtonRelease-1>", on_release)
-    win.bind("<Escape>", on_escape)
-    win.focus_force()
-    win.mainloop()
-    return result.get("region")
+    AUCTION_FAILURE = "auction_failure"
+    """购买失败。"""
 
 
-def _capture_template_to(region: tuple[int, int, int, int],
-                         filepath: Path) -> None:
-    """Capture a screenshot of *region* and save to *filepath* (PNG)."""
-    x, y, w, h = region
-    img = pyautogui.screenshot(region=(x, y, w, h))
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(filepath))
+SLOT_LABELS: dict[str, str] = {
+    "car_present": "有车状态",
+    "car_absent": "无车状态",
+    "auction_success": "抢车成功",
+    "auction_failure": "抢车失败",
+}
 
-
-def _capture_template(region: tuple[int, int, int, int]) -> None:
-    """Capture a screenshot and save to the default template file."""
-    _capture_template_to(region, TEMPLATE_FILE)
-
-
-# ── 图像匹配 ──────────────────────────────────────────────
-
-def _match_template(screenshot: np.ndarray, template: np.ndarray) -> float:
-    """Run OpenCV template matching and return the max confidence (0.0-1.0)."""
-    if len(screenshot.shape) == 3:
-        scr_gray = cv2.cvtColor(screenshot, cv2.COLOR_RGB2GRAY)
-    else:
-        scr_gray = screenshot
-    if len(template.shape) == 3:
-        tpl_gray = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY)
-    else:
-        tpl_gray = template
-    th, tw = tpl_gray.shape[:2]
-    sh, sw = scr_gray.shape[:2]
-    if th > sh or tw > sw:
-        return 0.0
-    result = cv2.matchTemplate(scr_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, _ = cv2.minMaxLoc(result)
-    return float(max_val)
-
-
-# ── 多特征匹配 (槽位适配版) ────────────────────────────────
-
-def match_all_features(store) -> tuple[object | None, float]:
-    """Match all slots with loaded templates against their regions.
-
-    For each slot in *store* that has ``template_image is not None``
-    and ``region is not None``, screenshots its region and runs
-    :func:`_match_template`.
-
-    Args:
-        store: A :class:`FeatureStore` instance.
-
-    Returns:
-        ``(best_slot, best_confidence)`` where *best_slot* is the
-        :class:`FeatureSlot` with the highest confidence, or
-        ``(None, 0.0)`` if no slot matched or no templates are loaded.
-    """
-    best_slot = None
-    best_confidence: float = 0.0
-    for slot in store:
-        if slot.template_image is None or slot.region is None:
-            continue
-        x, y, w, h = slot.region
-        try:
-            screenshot = pyautogui.screenshot(region=(x, y, w, h))
-            scr_np: np.ndarray = np.array(screenshot)
-            conf: float = _match_template(scr_np, slot.template_image)
-            if conf > best_confidence:
-                best_confidence = conf
-                best_slot = slot
-        except Exception:
-            continue
-    return best_slot, best_confidence
+_DEFAULT_STEPS: list[dict] = [
+    {"name": "Enter (搜索)", "type": "keypress", "key": "enter", "delay": 0.05},
+    {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
+    {
+        "name": "截图识别",
+        "type": "match",
+        "feature_type": "car_present/car_absent",
+        "delay": 0.0,
+    },
+]
 
 
 # ── 按键 ──────────────────────────────────────────────────
+
+class _PauseExit(Exception):
+    """用户在暂停期间退出运行（Esc/Enter），用于跳出按键流程。"""
+
 
 def _press(key: str, interval: float = 0.05) -> None:
     """Press a key via pyautogui and wait *interval* seconds."""
     pyautogui.press(key)
     time.sleep(interval)
-
-
-# ── 动态宽度 ──────────────────────────────────────────────
-
-def _calc_width(content_lines: list[str], title: str, min_w: int = 32) -> int:
-    """Calculate the widest display width among content lines and title."""
-    from udlrtui import display_width
-    max_w = display_width(title) + 6
-    for line in content_lines:
-        max_w = max(max_w, display_width(line))
-    return max(max_w + 6, min_w)
 
 
 # ══════════════════════════════════════════════════════════
@@ -248,11 +113,14 @@ class AuctionTask(BaseTask):
     def _setup(self) -> None:
         """Initialise the FeatureStore for auction data."""
         self.data_dir: Path = DATA_DIR
-        self.store = FeatureStore(self.data_dir)
+        self.store = FeatureStore(
+            data_dir=DATA_DIR,
+            slot_types=[t.value for t in FeatureType],
+            slot_labels=SLOT_LABELS,
+            default_steps=_DEFAULT_STEPS,
+        )
         self.store.load()
         self.store.load_all_templates()
-        # Load cached steps: from config if it has a full branch tree,
-        # otherwise fall back to the hardcoded defaults.
         self._steps_cache: list[StepConfig] = self._load_steps()
         self.nav = Navigator(
             n_items=1 + self._count_nav_steps(self._steps_cache) + 4
@@ -307,12 +175,10 @@ class AuctionTask(BaseTask):
         for loaded_step, default_step in zip(loaded, defaults):
             if loaded_step.node_id is None and default_step.node_id:
                 loaded_step.node_id = default_step.node_id
-            # Recurse into children
             if loaded_step.children and default_step.children:
                 AuctionTask._fill_node_ids(
                     loaded_step.children, default_step.children,
                 )
-            # Recurse into branches (matched by position)
             if loaded_step.branches and default_step.branches:
                 for lb, db in zip(loaded_step.branches, default_step.branches):
                     if lb.node_id is None and db.node_id:
@@ -334,9 +200,6 @@ class AuctionTask(BaseTask):
             StepConfig(
                 "Enter", type="keypress", key="enter", delay=0.05,
                 node_id="enter",
-            ),
-            StepConfig(
-                "等待加载", type="wait", delay=0.8, node_id="wait",
             ),
             StepConfig(
                 "判断",
@@ -512,7 +375,8 @@ class AuctionTask(BaseTask):
                 slot.feature_type, slot.feature_type
             )
             width_samples.append(f"{label} [截取] [删除]")
-        self._tree_w = self._calc_width(width_samples, self.task_name, 42)
+        from core.task_base import calc_width
+        self._tree_w = calc_width(width_samples, self.task_name, 42)
 
         guard: FocusGuard = self._make_guard(self._tree_w)
 
@@ -531,124 +395,130 @@ class AuctionTask(BaseTask):
             self.render_idle(run_state=self._run_state)
 
         def _press_step(k: str, key_name: str) -> None:
-            """标记点击 *k* 为当前→渲染→睡眠延迟→按键→标记完成。"""
+            """标记点击 *k* 为当前→渲染→睡眠延迟→按键→标记完成。
+
+            按键前检查焦点，失焦则抛出 :class:`_PauseExit` 终止运行。
+            """
             node = node_map.get(k)
             delay: float = node.delay if node is not None else 0.05
             _set(k, _ST_CUR)
             _render()
             time.sleep(delay)
+            # 按键前检查焦点，避免失焦时把按键送到控制台
+            if not guard.check():
+                raise _PauseExit()
             pyautogui.press(key_name)
             _set(k, _ST_DONE)
 
+        def _press_guarded(key_name: str, interval: float = 0.15) -> None:
+            """无状态跟踪的按键，同样在按键前检查焦点。"""
+            if not guard.check():
+                raise _PauseExit()
+            pyautogui.press(key_name)
+            time.sleep(interval)
+
         while True:
-            key = try_read_key()
+            key = try_get_key()
             if key is not None and key in (K.ESC, K.BS, K.ENTER):
                 return
 
-            if not guard.check_or_pause():
+            if not guard.check():
                 return
 
-            self.stats["attempts"] += 1
-            # 每轮重置运行时状态
-            self._reset_runtime_status(self._steps_cache)
+            try:
+                self.stats["attempts"] += 1
+                # 每轮重置运行时状态
+                self._reset_runtime_status(self._steps_cache)
 
-            # ── ① Enter (搜索) ──
-            _press_step("enter_search", "enter")
+                # ── ① Enter (搜索) ──
+                _press_step("enter_search", "enter")
 
-            # ── ② Enter ──
-            _press_step("enter", "enter")
+                # ── ② Enter ──
+                _press_step("enter", "enter")
 
-            # ── 等待加载 ──
-            _set("wait", _ST_CUR)
-            _render()
-            _wait_node = node_map.get("wait")
-            _wait_delay = _wait_node.delay if _wait_node is not None else 0.8
-            time.sleep(_wait_delay)
-            _set("wait", _ST_DONE)
-
-            # ── ③ 截图识别(有车/无车) ──
-            _set("match_car", _ST_CUR)
-            _render()
-
-            key = try_read_key()
-            if key is not None and key in (K.ESC, K.BS, K.ENTER):
-                return
-
-            _, absent_conf = match_feature_slot(self.store, "car_absent")
-            fallback: float = self.store.settings.get(
-                "global_threshold_fallback", 0.85
-            )
-
-            if absent_conf >= fallback:
-                # 无车状态 → Esc → 回到①
-                _set("match_car", _ST_DONE)
-                _dim(self._DIM_CAR_YES)
-                _set("branch_nocar", _ST_DONE)
-                _press_step("nocar_esc", "esc")
-                continue
-
-            _, present_conf = match_feature_slot(self.store, "car_present")
-
-            if present_conf >= fallback:
-                # 有车状态 → 继续④
-                _set("match_car", _ST_DONE)
-                _set("branch_car_yes", _ST_DONE)
-                _dim(self._DIM_NOCAR)
-
-                # ── ④ Y → ↓ → Enter → Enter ──
-                _press_step("y", "y")
-                _press_step("down", "down")
-                _press_step("enter_buy1", "enter")
-                _press_step("enter_buy2", "enter")
-
-                # ── ⑤ 截图识别(成功/失败) ──
-                _set("match_result", _ST_CUR)
+                # ── ③ 截图识别(有车/无车) ──
+                _set("match_car", _ST_CUR)
                 _render()
 
-                key = try_read_key()
+                key = try_get_key()
                 if key is not None and key in (K.ESC, K.BS, K.ENTER):
                     return
 
-                _, success_conf = match_feature_slot(
-                    self.store, "auction_success"
-                )
-                _, fail_conf = match_feature_slot(
-                    self.store, "auction_failure"
+                _, absent_conf = self.store.match_slot("car_absent")
+                fallback: float = self.store.settings.get(
+                    "global_threshold_fallback", 0.85
                 )
 
-                if success_conf >= fallback:
-                    # 抢车成功 → 结束
-                    _set("match_result", _ST_DONE)
-                    _set("branch_success", _ST_DONE)
-                    _dim(self._DIM_FAIL)
-                    self.stats["found"] += 1
-                    _render()
-                    time.sleep(1.5)
-                    return
-
-                elif fail_conf >= fallback:
-                    # 抢车失败 → Enter → Esc → Esc → 回到①
-                    _set("match_result", _ST_DONE)
-                    _set("branch_fail", _ST_DONE)
-                    _dim(self._DIM_SUCCESS)
-                    _press_step("fail_enter", "enter")
-                    _press_step("fail_esc1", "esc")
-                    _press_step("fail_esc2", "esc")
+                if absent_conf >= fallback:
+                    # 无车状态 → Esc → 回到①
+                    _set("match_car", _ST_DONE)
+                    _dim(self._DIM_CAR_YES)
+                    _set("branch_nocar", _ST_DONE)
+                    _press_step("nocar_esc", "esc")
                     continue
+
+                _, present_conf = self.store.match_slot("car_present")
+
+                if present_conf >= fallback:
+                    # 有车状态 → 继续④
+                    _set("match_car", _ST_DONE)
+                    _set("branch_car_yes", _ST_DONE)
+                    _dim(self._DIM_NOCAR)
+
+                    # ── ④ Y → ↓ → Enter → Enter ──
+                    _press_step("y", "y")
+                    _press_step("down", "down")
+                    _press_step("enter_buy1", "enter")
+                    _press_step("enter_buy2", "enter")
+
+                    # ── ⑤ 截图识别(成功/失败) ──
+                    _set("match_result", _ST_CUR)
+                    _render()
+
+                    key = try_get_key()
+                    if key is not None and key in (K.ESC, K.BS, K.ENTER):
+                        return
+
+                    _, success_conf = self.store.match_slot("auction_success")
+                    _, fail_conf = self.store.match_slot("auction_failure")
+
+                    if success_conf >= fallback:
+                        # 抢车成功 → 结束
+                        _set("match_result", _ST_DONE)
+                        _set("branch_success", _ST_DONE)
+                        _dim(self._DIM_FAIL)
+                        self.stats["found"] += 1
+                        _render()
+                        time.sleep(1.5)
+                        return
+
+                    elif fail_conf >= fallback:
+                        # 抢车失败 → Enter → Esc → Esc → 回到①
+                        _set("match_result", _ST_DONE)
+                        _set("branch_fail", _ST_DONE)
+                        _dim(self._DIM_SUCCESS)
+                        _press_step("fail_enter", "enter")
+                        _press_step("fail_esc1", "esc")
+                        _press_step("fail_esc2", "esc")
+                        continue
+
+                    else:
+                        # 无明确结果 → 视为失败
+                        _set("match_result", _ST_DONE)
+                        _dim(self._DIM_SUCCESS | self._DIM_FAIL)
+                        _press_guarded("esc")
+                        continue
 
                 else:
-                    # 无明确结果 → 视为失败
-                    _set("match_result", _ST_DONE)
-                    _dim(self._DIM_SUCCESS | self._DIM_FAIL)
-                    _press("esc", 0.15)
+                    # 都不匹配 → Esc → 回到①
+                    _set("match_car", _ST_DONE)
+                    _dim(self._DIM_CAR_YES | self._DIM_NOCAR)
+                    _press_guarded("esc")
                     continue
 
-            else:
-                # 都不匹配 → Esc → 回到①
-                _set("match_car", _ST_DONE)
-                _dim(self._DIM_CAR_YES | self._DIM_NOCAR)
-                _press("esc", 0.15)
-                continue
+            except _PauseExit:
+                # 用户在暂停期间退出（Esc/Enter），结束运行
+                return
 
 
 # ══════════════════════════════════════════════════════════

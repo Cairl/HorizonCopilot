@@ -1,17 +1,25 @@
-"""Feature store for auction vehicle detection — four fixed slot data model.
+"""通用特征槽位存储 — 项目级共享基础设施。
 
-Manages exactly four fixed :class:`FeatureSlot` instances (car_present,
-car_absent, auction_success, auction_failure) with automatic migration
-from v3 (multi-feature list) to v4 (fixed slots) config format.
+管理一组 :class:`FeatureSlot` 实例，支持磁盘持久化（v4 JSON 格式）、
+模板图片加载、以及单槽位模板匹配。
 
-Usage::
+与 auction 特化代码解耦：槽位类型和标签由构造参数注入，各任务自行定义。
 
-    store = FeatureStore(DATA_DIR)
+用法::
+
+    from core.feature_store import FeatureStore
+
+    store = FeatureStore(
+        data_dir=Path("data"),
+        slot_types=["car_present", "car_absent", ...],
+        slot_labels={"car_present": "有车状态", ...},
+    )
     store.load()
     store.load_all_templates()
 
-    for slot in store:
-        print(slot.feature_type, slot.has_template())
+    slot, conf = store.match_slot("car_present")
+    if conf >= 0.85:
+        ...
 """
 
 from __future__ import annotations
@@ -20,40 +28,23 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
-
-
-# ── Default steps for migrated configs ────────────────────
-
-_DEFAULT_STEPS: list[dict] = [
-    {"name": "Enter (搜索)", "type": "keypress", "key": "enter", "delay": 0.05},
-    {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
-    {"name": "等待加载", "type": "wait", "delay": 0.8},
-    {
-        "name": "截图识别",
-        "type": "match",
-        "feature_type": "car_present/car_absent",
-        "delay": 0.0,
-    },
-]
+import pyautogui
 
 
 @dataclass
 class FeatureSlot:
-    """A single feature slot — one of four fixed types for auction matching.
+    """单个特征槽位 — 一个可识别的屏幕状态。
 
     Attributes:
-        feature_type: Slot identifier — one of ``"car_present"``,
-            ``"car_absent"``, ``"auction_success"``, ``"auction_failure"``.
-        region: Screen region tuple (x, y, w, h) for screenshot capture,
-            or ``None`` if not set.
-        template_file: Template image filename relative to data/ directory,
-            or ``None`` if not set.
-        threshold: Confidence threshold for this slot (0.0-1.0).
-        template_image: Loaded template as RGB numpy array, or ``None``
-            if not yet loaded / file missing.
+        feature_type: 槽位标识符（如 ``"car_present"``）。
+        region: 屏幕区域 ``(x, y, w, h)``，或 ``None``。
+        template_file: 模板图片文件名（相对于 data_dir），或 ``None``。
+        threshold: 置信度阈值 (0.0-1.0)。
+        template_image: 已加载的模板 numpy 数组（RGB），或 ``None``。
     """
 
     feature_type: str
@@ -63,29 +54,20 @@ class FeatureSlot:
     template_image: np.ndarray | None = None
 
     def has_template(self) -> bool:
-        """Return ``True`` if the template image has been loaded."""
+        """模板图片是否已加载。"""
         return self.template_image is not None
 
     def status_str(self) -> str:
-        """Return a human-readable status string for UI display."""
+        """UI 显示用的状态字符串。"""
         return "已截取" if self.has_template() else "未截取"
 
 
 class FeatureStore:
-    """Fixed four-slot feature store with disk persistence (v4 config format).
+    """通用特征槽位存储，支持磁盘持久化和模板匹配。
 
-    Manages exactly four :class:`FeatureSlot` instances:
+    槽位类型和标签由调用方注入，不绑定任何具体任务。
 
-    ===================  ==========
-    ``feature_type``     中文标签
-    ===================  ==========
-    ``car_present``      有车状态
-    ``car_absent``       无车状态
-    ``auction_success``  抢车成功
-    ``auction_failure``  抢车失败
-    ===================  ==========
-
-    v4 format (current)::
+    v4 配置格式::
 
         {
             "version": 4,
@@ -93,50 +75,32 @@ class FeatureStore:
                 "car_present": {"region": [100,200,300,50],
                                 "template_file": "car_present.png",
                                 "threshold": 0.85},
-                "car_absent": {"region": null, "template_file": null,
-                               "threshold": 0.85},
-                "auction_success": null,
-                "auction_failure": null
+                "car_absent": null,
+                ...
             },
+            "steps": [...],
             "settings": {"global_threshold_fallback": 0.85}
         }
 
-    Usage::
-
-        store = FeatureStore(DATA_DIR)
-        store.load()
-        store.load_all_templates()
-
-        store.set_slot("car_present", (100, 200, 300, 50),
-                       "car_present.png", 0.85)
-        store.save()
-
-        for slot in store:
-            print(slot.feature_type, slot.status_str())
+    Args:
+        data_dir: 数据目录（含 config.json 和模板图片）。
+        slot_types: 槽位类型列表，如 ``["car_present", "car_absent", ...]``。
+        slot_labels: 槽位中文标签映射，如 ``{"car_present": "有车状态"}``。
+        default_steps: 迁移旧配置时使用的默认步骤列表（可为空）。
     """
 
-    SLOT_TYPES: list[str] = [
-        "car_present",
-        "car_absent",
-        "auction_success",
-        "auction_failure",
-    ]
-
-    SLOT_LABELS: dict[str, str] = {
-        "car_present": "有车状态",
-        "car_absent": "无车状态",
-        "auction_success": "抢车成功",
-        "auction_failure": "抢车失败",
-    }
-
-    def __init__(self, data_dir: Path) -> None:
-        """Initialise store bound to a data directory.
-
-        Args:
-            data_dir: Directory containing config.json and template images.
-        """
+    def __init__(
+        self,
+        data_dir: Path,
+        slot_types: list[str],
+        slot_labels: dict[str, str],
+        default_steps: list[dict] | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.config_file = self.data_dir / "config.json"
+        self.SLOT_TYPES: list[str] = list(slot_types)
+        self.SLOT_LABELS: dict[str, str] = dict(slot_labels)
+        self._default_steps: list[dict] = list(default_steps) if default_steps else []
         self.slots: dict[str, FeatureSlot] = {
             t: FeatureSlot(feature_type=t) for t in self.SLOT_TYPES
         }
@@ -147,24 +111,24 @@ class FeatureStore:
 
     @property
     def settings(self) -> dict:
-        """Return a shallow copy of the settings dict."""
+        """返回 settings 字典的浅拷贝。"""
         return dict(self._settings)
 
     @property
     def steps(self) -> list[dict]:
-        """Return a shallow copy of the steps list."""
+        """返回 steps 列表的浅拷贝。"""
         return list(self._steps)
 
     # ── I/O ─────────────────────────────────────────────────
 
     def load(self) -> None:
-        """Load config from disk (v4 format).
+        """从磁盘加载配置（v4 格式）。
 
-        Auto-detects format version and migrates as needed:
-        - v1 / v2 / v3 → v4 (via :meth:`_migrate_to_v4`)
-        - v4 direct load
+        自动检测格式版本并迁移：
+        - v1 / v2 / v3 → v4（通过 :meth:`_migrate_to_v4`）
+        - v4 直接加载
 
-        Does **not** overwrite the file unless :meth:`save` is called.
+        不会覆盖文件，除非调用 :meth:`save`。
         """
         if not self.config_file.exists():
             return
@@ -175,11 +139,9 @@ class FeatureStore:
         version = cfg.get("version", 0)
         if version < 4:
             self._migrate_to_v4(cfg)
-            # Re-read the migrated file
             with open(self.config_file, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
 
-        # v4 load
         slots_data = cfg.get("slots", {})
         for feature_type in self.SLOT_TYPES:
             slot_data = slots_data.get(feature_type)
@@ -203,7 +165,7 @@ class FeatureStore:
         )
 
     def save(self) -> None:
-        """Persist all slots, steps, and settings to config.json (v4 format)."""
+        """持久化所有槽位、步骤和设置到 config.json（v4 格式）。"""
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         slots_data: dict = {}
@@ -221,7 +183,7 @@ class FeatureStore:
         cfg = {
             "version": 4,
             "slots": slots_data,
-            "steps": self._steps if self._steps else _DEFAULT_STEPS,
+            "steps": self._steps if self._steps else self._default_steps,
             "settings": self._settings,
         }
 
@@ -229,18 +191,15 @@ class FeatureStore:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
 
     def save_steps(self, steps_list: list[dict]) -> None:
-        """Save the steps array to the in-memory config and persist to disk.
+        """保存步骤数组到内存配置并持久化到磁盘。
 
         Args:
-            steps_list: List of step dicts with ``name``, ``type``, ``key``,
-                        ``delay``, ``feature_type``, and optional ``children``.
+            steps_list: 步骤字典列表。
         """
         self._steps = steps_list
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Reload current config to preserve slots + settings
         cfg = self._load_current_config()
-
         cfg["version"] = 4
         cfg["steps"] = steps_list
 
@@ -248,11 +207,7 @@ class FeatureStore:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
 
     def load_steps(self) -> list[dict]:
-        """Load steps from the config file (re-read from disk).
-
-        Returns:
-            The current steps list.
-        """
+        """从磁盘重新读取步骤列表。"""
         cfg = self._load_current_config()
         self._steps = cfg.get("steps", [])
         return self._steps
@@ -260,15 +215,7 @@ class FeatureStore:
     # ── Slot management ─────────────────────────────────────
 
     def get_slot(self, feature_type: str) -> FeatureSlot | None:
-        """Get a feature slot by type string.
-
-        Args:
-            feature_type: One of ``"car_present"``, ``"car_absent"``,
-                          ``"auction_success"``, ``"auction_failure"``.
-
-        Returns:
-            The :class:`FeatureSlot`, or ``None`` if the type is unknown.
-        """
+        """按类型获取特征槽位。"""
         return self.slots.get(feature_type)
 
     def set_slot(
@@ -278,27 +225,14 @@ class FeatureStore:
         template_file: str,
         threshold: float = 0.85,
     ) -> None:
-        """Set the data for a specific feature slot.
-
-        Args:
-            feature_type: Slot type string (must be in :attr:`SLOT_TYPES`).
-            region: Screen region as (x, y, w, h).
-            template_file: Filename (relative to data_dir) for the template PNG.
-            threshold: Confidence threshold (0.0-1.0).
-        """
+        """设置指定槽位的数据。"""
         slot = self.slots[feature_type]
         slot.region = region
         slot.template_file = template_file
         slot.threshold = threshold
 
     def clear_slot(self, feature_type: str) -> None:
-        """Clear the data for a specific feature slot.
-
-        Also deletes the associated template file from disk.
-
-        Args:
-            feature_type: Slot type string (must be in :attr:`SLOT_TYPES`).
-        """
+        """清除指定槽位的数据并删除模板文件。"""
         slot = self.slots[feature_type]
         old_file = slot.template_file
         slot.region = None
@@ -308,11 +242,7 @@ class FeatureStore:
             (self.data_dir / old_file).unlink(missing_ok=True)
 
     def load_all_templates(self) -> None:
-        """Load every slot's template image from disk into memory.
-
-        Slots whose template files are missing on disk will keep
-        ``template_image = None``.
-        """
+        """从磁盘加载所有槽位的模板图片到内存。"""
         for slot in self.slots.values():
             if slot.template_file:
                 tpl_path = self.data_dir / slot.template_file
@@ -327,10 +257,37 @@ class FeatureStore:
                 else:
                     slot.template_image = None
 
+    # ── Template matching ───────────────────────────────────
+
+    def match_slot(self, feature_type: str) -> tuple[FeatureSlot | None, float]:
+        """对指定槽位截图并执行模板匹配。
+
+        Args:
+            feature_type: 槽位类型字符串。
+
+        Returns:
+            ``(slot, confidence)`` — 槽位对象和匹配置信度，
+            或 ``(None, 0.0)``（槽位不存在 / 无模板 / 匹配失败）。
+        """
+        from core.template_match import match_template
+
+        slot = self.slots.get(feature_type)
+        if slot is None or not slot.has_template() or slot.region is None:
+            return None, 0.0
+
+        x, y, w, h = slot.region
+        try:
+            screenshot = pyautogui.screenshot(region=(x, y, w, h))
+            scr_np: np.ndarray = np.array(screenshot)
+            conf: float = match_template(scr_np, slot.template_image)
+            return slot, conf
+        except Exception:
+            return None, 0.0
+
     # ── Sequence protocol ───────────────────────────────────
 
     def __len__(self) -> int:
-        return 4
+        return len(self.SLOT_TYPES)
 
     def __getitem__(self, index: int) -> FeatureSlot:
         return self.slots[self.SLOT_TYPES[index]]
@@ -342,7 +299,7 @@ class FeatureStore:
     # ── Internal helpers ────────────────────────────────────
 
     def _load_current_config(self) -> dict:
-        """Read the config file fresh and return the parsed dict (empty if missing)."""
+        """读取配置文件并返回解析后的字典（不存在则返回空框架）。"""
         if not self.config_file.exists():
             return {
                 "version": 4,
@@ -356,33 +313,25 @@ class FeatureStore:
     # ── Migration ───────────────────────────────────────────
 
     def _migrate_to_v4(self, cfg: dict) -> None:
-        """Migrate any pre-v4 config to v4 in-place and persist.
+        """将 v4 之前的配置迁移到 v4 并持久化。
 
-        Handles:
-        - v1 (single-template ``region`` / ``threshold``)
-        - v2 (multi-feature list without ``feature_type``)
-        - v3 (multi-feature list with ``feature_type``)
+        处理：
+        - v1（单模板 ``region`` / ``threshold``）
+        - v2（多特征列表，无 ``feature_type``）
+        - v3（多特征列表，有 ``feature_type``）
 
-        Migration strategy:
-        1. Backup old config as ``config.v3.bak.json``.
-        2. Destroy old features list.
-        3. For each feature in the old list, try to map by ``feature_type``
-           into the corresponding slot.  If multiple features share the same
-           type, the last one wins.
-        4. Features with ``feature_type=None`` are discarded.
-        5. Write the new v4 config file.
-
-        Args:
-            cfg: The parsed config dict (modified in-place to v4).
+        迁移策略：
+        1. 备份旧配置为 ``config.v3.bak.json``。
+        2. 销毁旧 features 列表。
+        3. 按 ``feature_type`` 映射到对应槽位（同类型后者覆盖前者）。
+        4. ``feature_type=None`` 的特征被丢弃。
+        5. 写入新 v4 配置文件。
         """
-        # Backup old config
         bak_path = self.config_file.with_name("config.v3.bak.json")
         shutil.copy2(self.config_file, bak_path)
 
-        # Extract old features from whatever version
         old_features: list[dict] = cfg.get("features", [])
 
-        # Handle v1 (single region/threshold, no version field)
         if not old_features and cfg.get("region") is not None:
             old_features = [
                 {
@@ -394,7 +343,6 @@ class FeatureStore:
                 }
             ]
 
-        # Map old features into slots (last-wins for same type)
         slot_data: dict[str, dict | None] = {t: None for t in self.SLOT_TYPES}
         for feat in old_features:
             ftype = feat.get("feature_type")
@@ -406,15 +354,12 @@ class FeatureStore:
                 "threshold": feat.get("threshold", 0.85),
             }
 
-        # Preserve steps if they exist, else use defaults
         steps = cfg.get("steps", [])
         if not steps:
-            steps = _DEFAULT_STEPS
+            steps = self._default_steps
 
-        # Preserve settings
         settings = cfg.get("settings", self._settings)
 
-        # Write v4 config
         v4_cfg = {
             "version": 4,
             "slots": slot_data,
