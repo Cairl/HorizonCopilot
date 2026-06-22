@@ -19,6 +19,7 @@
       "key": "pageup",
       "delay": 0.1,
       "feature_type": null,
+      "fallback_key": null,
       "node_id": "pageup1"
     },
     {
@@ -27,6 +28,7 @@
       "key": "pageup",
       "delay": 0.1,
       "feature_type": null,
+      "fallback_key": null,
       "node_id": "pageup2"
     },
     {
@@ -35,15 +37,80 @@
       "key": "enter",
       "delay": 0.3,
       "feature_type": null,
+      "fallback_key": null,
       "node_id": "enter1"
     },
     {
       "name": "→",
       "type": "keypress",
       "key": "right",
+      "delay": 0.5,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "right1"
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
       "delay": 0.1,
       "feature_type": null,
-      "node_id": "right1"
+      "fallback_key": null,
+      "node_id": "enter2"
+    },
+    {
+      "name": "PageDown",
+      "type": "keypress",
+      "key": "pagedown",
+      "delay": 0.6,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "pagedown1"
+    },
+    {
+      "name": "PageDown",
+      "type": "keypress",
+      "key": "pagedown",
+      "delay": 0.1,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "pagedown2"
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 2.0,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "enter3"
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 2.0,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "enter4"
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 10.0,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "enter5"
+    },
+    {
+      "name": "检测比赛完成",
+      "type": "match",
+      "key": null,
+      "delay": 5.0,
+      "feature_type": "race_finished",
+      "fallback_key": null,
+      "node_id": "match_race"
     },
     {
       "name": "Enter",
@@ -51,78 +118,25 @@
       "key": "enter",
       "delay": 0.0,
       "feature_type": null,
-      "node_id": "enter2"
-    },
-    {
-      "name": "PageDown",
-      "type": "keypress",
-      "key": "pagedown",
-      "delay": 0.05,
-      "feature_type": null,
-      "node_id": "pagedown1"
-    },
-    {
-      "name": "PageDown",
-      "type": "keypress",
-      "key": "pagedown",
-      "delay": 0.05,
-      "feature_type": null,
-      "node_id": "pagedown2"
-    },
-    {
-      "name": "Enter",
-      "type": "keypress",
-      "key": "enter",
-      "delay": 0.05,
-      "feature_type": null,
-      "node_id": "enter3"
-    },
-    {
-      "name": "Enter",
-      "type": "keypress",
-      "key": "enter",
-      "delay": 0.05,
-      "feature_type": null,
-      "node_id": "enter4"
-    },
-    {
-      "name": "Enter",
-      "type": "keypress",
-      "key": "enter",
-      "delay": 0.05,
-      "feature_type": null,
-      "node_id": "enter5"
-    },
-    {
-      "name": "检测比赛完成",
-      "type": "match",
-      "key": null,
-      "delay": 0.5,
-      "feature_type": "race_finished",
-      "node_id": "match_race"
-    },
-    {
-      "name": "Enter",
-      "type": "keypress",
-      "key": "enter",
-      "delay": 0.05,
-      "feature_type": null,
+      "fallback_key": null,
       "node_id": "enter6"
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.05,
+      "delay": 0.0,
       "feature_type": null,
+      "fallback_key": null,
       "node_id": "enter7"
     },
     {
       "name": "Esc",
       "type": "keypress",
       "key": "esc",
-      "delay": 0.05,
+      "delay": 0.0,
       "feature_type": null,
+      "fallback_key": null,
       "node_id": "esc"
     }
   ],

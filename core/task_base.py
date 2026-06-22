@@ -4,29 +4,28 @@ Provides :class:`StepConfig` / :class:`Branch` dataclasses, :func:`calc_width`
 utility, and the :class:`BaseTask` abstract base class using the template
 method pattern for idle / running state management.
 
-Usage::
+Layout (idle / running)::
 
-    class MyTask(BaseTask):
-        task_name = "我的任务"
-        task_tag = "my_task"
+    ╭── task_name ───────────────────────────────────────────╮
+    │  菜单            │  执行图 / 特征库                      │
+    │  ──────────────  │  ──────────────────────────────────   │
+    │  › 开始运行      │   ├─ 等待 50 ms 点击 ENTER             │
+    │  ┈┈ 设置 ┈┈      │   └─ 每隔 100 ms 检测 有车状态/无车状态 │
+    │    执行图        │      ├─ 有车状态                       │
+    │    特征库        │      │  └─ ...                         │
+    │                  │      └─ 无车状态                       │
+    ╰──────────────────────────────────────────────────────────╯
 
-        def _setup(self):
-            self.data_dir = Path(__file__).parent / "data"
-            self.store = FeatureStore(self.data_dir, ...)
-            self.store.load()
-            self.store.load_all_templates()
-            self.nav = Navigator(n_items=1 + len(steps) + 4)
-            steps = self.get_steps()
-            self.stats = {"attempts": 0, "found": 0}
+The left column is a fixed menu (``开始运行`` / ``执行图`` / ``特征库``,
+separated by a ``设置`` divider).  The right column is always open and
+shows either the execution graph or the feature library.  ``Tab``
+switches column focus; ``Enter`` on a step row starts running *from
+that row*.
 
-        def get_steps(self) -> list[StepConfig]:
-            return [...]
-
-        def execute_step(self, step: StepConfig) -> bool:
-            ...
-
-        def _run_core_loop(self):
-            ...
+Running is driven by :meth:`BaseTask._execute_tree`, a generic
+tree-walking executor that handles ``keypress`` / ``hold`` / ``wait`` /
+``match`` (branched or branchless) steps, dimming of non-taken branches,
+focus-guard, 0 ms pause, and start-from-node skipping.
 """
 
 from __future__ import annotations
@@ -36,8 +35,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import pyautogui
+
 from udlrtui import C, K, Renderer, Navigator, widgets as W
-from udlrtui import drain_keyboard, get_key, try_get_key
+from udlrtui import display_width, drain_keyboard, get_key, try_get_key
 
 from core.focus import FocusGuard
 
@@ -61,6 +62,9 @@ class StepConfig:
             the hold duration).
         feature_type: Feature type string for ``"match"`` steps
             (e.g. ``"car_present/car_absent"``).
+        fallback_key: Optional key to press when a branched ``match``
+            step matches no branch (e.g. ``"esc"`` to bail out and
+            retry).  ``None`` = no fallback key.
         children: Optional ordered sub-steps executed after this step.
         branches: Optional conditional branches — each :class:`Branch`
             is taken when its condition matches the recognition result.
@@ -79,6 +83,7 @@ class StepConfig:
     key: str | None = None
     delay: float = 0.05
     feature_type: str | None = None
+    fallback_key: str | None = None
     children: list[StepConfig] | None = None
     branches: list[Branch] | None = None
     node_id: str | None = None
@@ -93,9 +98,12 @@ class Branch:
     Attributes:
         condition: Human-readable condition label shown in the tree
             (e.g. ``"有车"``, ``"无车"``, ``"成功"``, ``"失败"``).
+            Must match a value in :attr:`FeatureStore.SLOT_LABELS` so
+            the executor can map it back to a feature type.
         steps: Ordered steps to execute when this branch is taken.
         loop: Loop-back label shown after the condition (e.g.
-            ``"回到①"``, ``"结束"``) or ``None`` for none.
+            ``"回到①"``, ``"结束"``).  ``"结束"`` ends the run;
+            any other value loops back to the top of the tree.
         node_id: Stable identifier for runtime status lookup.
         runtime_status: Runtime-only status (not serialised).
     """
@@ -121,16 +129,7 @@ _ACTION_LABELS: dict[str, str] = {
 
 
 def action_label(type_str: str) -> str:
-    """Return the Chinese action label for a step type.
-
-    Mapping::
-
-        keypress / click → 点击
-        press            → 按下
-        release          → 抬起
-        wait             → 等待
-        match            → 判断
-    """
+    """Return the Chinese action label for a step type."""
     return _ACTION_LABELS.get(type_str, type_str)
 
 
@@ -139,6 +138,15 @@ def action_label(type_str: str) -> str:
 _ST_DONE = "done"
 _ST_CUR = "current"
 _ST_DIM = "dimmed"  # branch not taken (greyed out)
+
+# Left-column inner width (fits "停止运行" + pointer + padding).
+_LEFT_W: int = 14
+
+
+# ── Pause exception ───────────────────────────────────────
+
+class _PauseExit(Exception):
+    """用户在运行/暂停期间退出（Esc/Enter/失焦），用于跳出执行流程。"""
 
 
 # ══════════════════════════════════════════════════════════
@@ -149,24 +157,21 @@ class BaseTask(ABC):
     """Abstract base for all automation tasks.
 
     Implements the template-method pattern with a two-state
-    (idle / running) main loop.  Subclasses provide:
+    (idle / running) main loop and a two-column "book-spread" layout.
+
+    Subclasses provide:
       - :meth:`_setup` — initialisation
       - :meth:`get_steps` — step definitions
-      - :meth:`get_required_feature_types` — required types
-      - :meth:`execute_step` — single-step execution
-      - :meth:`_run_core_loop` — full running-state flow
+      - :meth:`_run_core_loop` — pre/post hooks around the generic
+        executor (:meth:`_execute_tree`)
 
-    Attributes:
-        task_name: Human-readable task name.
-        task_tag: Unique task identifier (used for routing).
-        renderer: UdlrTui ``Renderer`` instance.
-        store: :class:`~core.feature_store.FeatureStore`
-            (created by :meth:`_setup`).
-        nav: Single Navigator for the entire idle screen
-            (start button + 4 feature slots + execution steps).
-        state: ``"idle"`` or ``"running"``.
-        focus: ``"features"`` or ``"steps"`` (Tab-switchable).
-        stats: Dict with ``attempts`` and ``found`` counters.
+    Layout state:
+      - ``left_nav`` — Navigator over the 3 left-menu items
+        (开始运行 / 执行图 / 特征库).
+      - ``right_nav`` — Navigator over the current right-panel content
+        (execution steps or feature slots).
+      - ``col_focus`` — ``"left"`` or ``"right"`` (``Tab`` to switch).
+      - ``right_view`` — ``"steps"`` or ``"features"``.
     """
 
     task_name: str = ""
@@ -178,29 +183,23 @@ class BaseTask(ABC):
     def _setup(self) -> None:
         """Initialise the task (create store, load config, load templates).
 
-        Called once when :meth:`run` starts.  Subclasses **must**
-        set ``self.store``, ``self.nav``,
-        and ``self.stats`` here.
+        Subclasses **must** set ``self.store``, ``self.data_dir``,
+        ``self._steps_cache`` and ``self.stats`` here.
         """
         ...
 
     @abstractmethod
     def get_steps(self) -> list[StepConfig]:
-        """Return the execution step definitions for this task."""
-        ...
-
-    @abstractmethod
-    def execute_step(self, step: StepConfig) -> bool:
-        """Execute a single step.  Return ``True`` to continue, ``False`` to stop."""
+        """Return the execution step tree for this task."""
         ...
 
     @abstractmethod
     def _run_core_loop(self) -> None:
-        """Core automation loop — called when entering running state.
+        """Running-state entry point.
 
-        This is where the main game interaction happens (e.g. the
-        task's main iteration).  Should return when the loop
-        completes or is interrupted by the user.
+        Default subclasses wrap :meth:`_execute_tree` with task-specific
+        pre/post hooks (e.g. CapsLock toggle).  The generic executor
+        handles the actual tree walk.
         """
         ...
 
@@ -210,29 +209,34 @@ class BaseTask(ABC):
         """Initialise navigators to empty (overwritten by :meth:`_setup`)."""
         self.renderer: Renderer = renderer
         self.store: FeatureStore | None = None
-        self.nav: Navigator = Navigator(n_items=0)
         self.state: str = "idle"
         self.stats: dict = {"attempts": 0, "found": 0}
         self._guard: FocusGuard | None = None
-        # Per-slot action: 0 = 截取, 1 = 删除
         self._slot_action: int = 0
-        # 运行状态: "idle" / "running"
-        # idle=未启动(绿色"开始运行")
-        # running=运行中(红色"停止运行")
         self._run_state: str = "idle"
+        # Two-column nav state
+        self.left_nav: Navigator = Navigator(n_items=3)
+        self.right_nav: Navigator = Navigator(n_items=1)
+        self.col_focus: str = "left"
+        self.right_view: str = "steps"
+        # Edit mode for the right panel (steps: adjust delay; features:
+        # toggle 截取/删除).  Enter to enter, Esc to exit.
+        self.right_editing: bool = False
+        # Run-from-row target (None = run from top).
+        self._start_node: str | None = None
+        # Transient message (e.g. missing-feature stop reason).
+        self._missing_msg: str = ""
+        # Executor internals (set in _execute_tree).
+        self._node_map: dict[str, StepConfig | Branch] = {}
+        self._skip_active: bool = False
+        self._steps_cache: list[StepConfig] = []
 
     # ── Main loop — template method ───────────────────────
 
     def run(self) -> None:
-        """Main entry point: idle ↔ running state machine.
-
-        1. Calls :meth:`_setup` to initialise the store and UI state.
-        2. Enters the idle loop (feature/steps editing).
-        3. On user action transitions to running state.
-        4. After running completes returns to idle.
-        5. On Esc exits and resets the renderer.
-        """
+        """Main entry point: idle ↔ running state machine."""
         self._setup()
+        self._init_nav()
         self.state = "idle"
         drain_keyboard()
 
@@ -242,224 +246,413 @@ class BaseTask(ABC):
                 key: bytes = get_key()
                 handled: bool = self.handle_idle_key(key)
                 if not handled:
-                    # handle_idle_key returned False → exit requested
                     self.renderer.reset()
                     return
 
             elif self.state == "running":
                 self._run_core_loop()
-                # Running loop completed → back to idle
-                # Clear buffered keys (especially the Enter/Esc that triggered
-                # the stop) so they don't immediately re-trigger in idle.
+                # Running loop completed → back to idle.
                 drain_keyboard()
                 self.renderer.reset()
                 if self.store is not None:
                     self.store.load()
                     self.store.load_all_templates()
-                steps = self.get_steps()
-                self.nav.n_items = 1 + self._count_nav_steps(steps) + len(self.store)
+                self._sync_right_nav()
+                self._start_node = None
+                self.right_editing = False
+                # Keep _missing_msg so the first idle render shows it;
+                # cleared on the next keypress in handle_idle_key.
                 self.state = "idle"
 
-    # ── Idle rendering (three-area layout) ────────────────
+    # ── Nav initialisation ────────────────────────────────
+
+    def _init_nav(self) -> None:
+        """(Re)initialise the two-column navigators after :meth:`_setup`."""
+        self.left_nav = Navigator(n_items=3)
+        self.left_nav.index = 0
+        self.right_view = "steps"
+        self.col_focus = "left"
+        self.right_editing = False
+        self._slot_action = 0
+        self._start_node = None
+        self._missing_msg = ""
+        self._sync_right_nav()
+
+    def _sync_right_nav(self) -> None:
+        """Resize ``right_nav`` to match the current right-view content."""
+        steps: list[StepConfig] = self.get_steps()
+        if self.right_view == "steps":
+            n: int = self._count_nav_steps(steps)
+        else:
+            n = len(self.store) if self.store is not None else 0
+        n = max(n, 1)
+        if self.right_nav is None:
+            self.right_nav = Navigator(n_items=n)
+        else:
+            self.right_nav.n_items = n
+            if self.right_nav.index >= n:
+                self.right_nav.index = 0
+
+    # ── Idle rendering (two-column book spread) ───────────
 
     def render_idle(self, run_state: str = "idle") -> None:
-        """Render the idle screen with three areas:
+        """Render the two-column idle / running screen.
 
-        **Area A** — Feature library (4 fixed slot rows).
-        **Area B** — ▶ Start button.
-        **Area C** — Execution path (editable step list, or locked
-        runtime-status display when running).
-
-        The *run_state* parameter controls the start button label/colour
-        and whether the execution graph is locked:
-
-        - ``"idle"``    → 绿色 "开始运行"，光标可移动，执行图可编辑
-        - ``"running"`` → 红色 "停止运行"，光标固定在按钮上，执行图锁定
-
-        The layout adapts to the terminal width automatically.
+        Left column: ``开始运行`` / ``设置`` divider / ``执行图`` /
+        ``特征库``.  Right column: always open; shows the execution
+        graph (default) or the feature library.  During running the
+        right column is forced to the execution graph with live
+        runtime status, and the left menu is locked.
         """
         if self.store is None:
             return
 
         steps: list[StepConfig] = self.get_steps()
-        n_steps: int = len(steps)
         running: bool = run_state != "idle"
 
-        # ── Build sample strings for width calculation ──
-        # Collect actual tree prefixes (not a fixed sample) so deep
-        # branches don't get truncated.  Running mode adds a "✓ " mark.
-        btn_label: str = {"idle": "开始运行", "running": "停止运行"}.get(run_state, "开始运行")
-        width_samples: list[str] = [btn_label]
-        self._collect_width_samples(steps, "", width_samples, running=running)
-        for slot in self.store:
-            label = self.store.SLOT_LABELS.get(
-                slot.feature_type, slot.feature_type
-            )
-            width_samples.append(
-                f"{label} [截取] [删除]"
-            )
-        w: int = calc_width(width_samples, self.task_name, 42)
+        view: str = "steps" if running else self.right_view
 
-        lines: list[str] = [W.top_border(self.task_name, w)]
-        lines.append(W.line("", w))
+        left_rows: list[tuple[str, bool]] = self._build_left_menu(run_state)
 
-        # ── Area B: Start button ──
-        # idle=绿色"开始运行"(光标可移动)
-        # running=红色"停止运行"(光标固定)
-        btn_color: str = {
-            "idle": C.GREEN, "running": C.RED,
-        }.get(run_state, C.GREEN)
-        btn_text: str = f"{btn_color}{C.BOLD}{btn_label}{C.RESET}"
+        if view == "steps":
+            right_rows, right_w = self._build_steps_panel(steps, running)
+            right_title = "执行图"
+        else:
+            right_rows, right_w = self._build_features_panel(running)
+            right_title = "特征库"
+
+        # Missing-feature stop message (shown until next keypress).
+        if self._missing_msg:
+            right_rows.append((
+                W.inner_line(
+                    f"{C.RED}缺少特征: {self._missing_msg}{C.RESET}", right_w,
+                ),
+                False,
+            ))
+
+        lines: list[str] = W.two_column_frame(
+            self.task_name, "菜单", left_rows,
+            right_title, right_rows, _LEFT_W, right_w,
+        )
+        self.renderer.render(lines)
+
+    def _build_left_menu(
+        self, run_state: str,
+    ) -> list[tuple[str, bool]]:
+        """Build the left-column menu rows (inner strings)."""
+        running: bool = run_state != "idle"
+        rows: list[tuple[str, bool]] = []
+
+        # Item 0: 开始运行 / 停止运行
+        btn_label: str = "停止运行" if running else "开始运行"
+        btn_color: str = C.RED if running else C.GREEN
+        sel0: bool = running or (
+            self.col_focus == "left" and self.left_nav.index == 0
+        )
+        btn_content: str = f"{btn_color}{C.BOLD}{btn_label}{C.RESET}"
+        rows.append((
+            W.inner_sel(btn_content, _LEFT_W) if sel0
+            else W.inner_line(f"{btn_color}{btn_label}{C.RESET}", _LEFT_W),
+            sel0,
+        ))
+
+        # 设置 divider (non-selectable section header)
+        rows.append((W.inner_divider("设置", _LEFT_W), False, True))
+
+        # Item 1: 执行图 — underline marks the currently-opened view
+        sel1: bool = (not running) and self.col_focus == "left" \
+            and self.left_nav.index == 1
         if running:
-            # 运行态：光标固定在按钮上，显示 › 指针表示可交互（Enter 终止运行）
-            lines.append(W.line_bg(btn_text, w, pointer=True))
-        elif self.nav.index == 0:
-            # idle 选中态：显示 › 指针
-            lines.append(W.line_bg(btn_text, w, pointer=True))
+            label1: str = f"{C.GRAY}执行图{C.RESET}"
+        elif sel1:
+            label1 = "执行图"
+        elif self.right_view == "steps":
+            label1 = f"{C.UNDERLINE}执行图{C.RESET}"
         else:
-            lines.append(W.line(btn_text, w))
+            label1 = "执行图"
+        rows.append((
+            W.inner_sel(label1, _LEFT_W) if sel1
+            else W.inner_line(label1, _LEFT_W),
+            sel1,
+        ))
 
-        # ── Area C: Execution graph (tree with branches) ──
-        lines.append(W.line("", w))
-        lines.append(W.divider("执行图", w))
-        lines.append(W.line("", w))
-
-        if n_steps == 0:
-            lines.append(W.line(f"{C.GRAY}  无步骤定义{C.RESET}", w))
+        # Item 2: 特征库 — underline marks the currently-opened view
+        sel2: bool = (not running) and self.col_focus == "left" \
+            and self.left_nav.index == 2
+        if running:
+            label2: str = f"{C.GRAY}特征库{C.RESET}"
+        elif sel2:
+            label2 = "特征库"
+        elif self.right_view == "features":
+            label2 = f"{C.UNDERLINE}特征库{C.RESET}"
         else:
-            nav_idx: int = 1  # start button occupies index 0
-            for i, step in enumerate(steps):
-                is_last: bool = i == len(steps) - 1
-                nav_idx = self._render_step_tree(
-                    step, "", is_last, lines, w, nav_idx, running=running,
-                )
+            label2 = "特征库"
+        rows.append((
+            W.inner_sel(label2, _LEFT_W) if sel2
+            else W.inner_line(label2, _LEFT_W),
+            sel2,
+        ))
 
-        # ── Area A: Feature library (navigable) ──
-        lines.append(W.line("", w))
-        lines.append(W.divider("特征库", w))
-        lines.append(W.line("", w))
-        slot_start: int = 1 + self._count_nav_steps(steps)
+        return rows
 
-        for i, slot in enumerate(self.store):
-            nav_idx = slot_start + i
+    def _build_steps_panel(
+        self, steps: list[StepConfig], running: bool,
+    ) -> tuple[list[tuple[str, bool]], int]:
+        """Build the execution-graph right-column rows + inner width."""
+        samples: list[str] = []
+        self._collect_width_samples(steps, "", samples, running=running)
+        max_w: int = max([display_width(s) for s in samples] + [20])
+        right_w: int = max_w + 4  # pointer(2) + padding(2)
+
+        rows: list[tuple[str, bool]] = []
+        if not steps:
+            rows.append((
+                W.inner_line(f"{C.GRAY}  无步骤定义{C.RESET}", right_w), False,
+            ))
+            return rows, right_w
+
+        nav_idx: int = 0  # 0-based into navigable steps
+        for i, step in enumerate(steps):
+            is_last: bool = i == len(steps) - 1
+            nav_idx = self._render_step_inner(
+                step, "", is_last, rows, right_w, nav_idx, running,
+            )
+        return rows, right_w
+
+    def _build_features_panel(
+        self, running: bool,
+    ) -> tuple[list[tuple[str, bool]], int]:
+        """Build the feature-library right-column rows + inner width."""
+        slots = list(self.store) if self.store is not None else []
+        samples: list[str] = []
+        for slot in slots:
             label = self.store.SLOT_LABELS.get(
-                slot.feature_type, slot.feature_type
+                slot.feature_type, slot.feature_type,
+            )
+            samples.append(f"{label} [截取] [删除]")
+        max_w: int = max([display_width(s) for s in samples] + [20])
+        right_w: int = max_w + 4
+
+        rows: list[tuple[str, bool]] = []
+        for i, slot in enumerate(slots):
+            label = self.store.SLOT_LABELS.get(
+                slot.feature_type, slot.feature_type,
             )
             cap_color: str = C.GREEN if slot.has_template() else C.YELLOW
-            # 选中态：保留原色 + 加粗（不覆盖为白色）
-            cap_b = f"[{C.BOLD}{cap_color}\u622a\u53d6{C.RESET}]"
-            cap_g = f" {cap_color}\u622a\u53d6{C.RESET} "
-            dlt_b = f"[{C.BOLD}{C.RED}\u5220\u9664{C.RESET}]"
-            dlt_g = f" {C.RED}\u5220\u9664{C.RESET} "
-            # 运行时光标固定在开始按钮，特征库行不会被选中
-            if (not running) and self.nav.index == nav_idx:
+            cap_b = f"[{C.BOLD}{cap_color}截取{C.RESET}]"
+            cap_g = f" {cap_color}截取{C.RESET} "
+            dlt_b = f"[{C.BOLD}{C.RED}删除{C.RESET}]"
+            dlt_g = f" {C.RED}删除{C.RESET} "
+            is_cursor: bool = (not running) and self.col_focus == "right" \
+                and self.right_nav.index == i
+            is_edit: bool = is_cursor and self.right_editing
+            if is_edit:
+                # Edit mode: brackets on the selected action
                 cap = cap_b if self._slot_action == 0 else cap_g
                 dlt = dlt_b if self._slot_action == 1 else dlt_g
-                row: str = f"{label} {cap}{dlt}"
-                lines.append(W.line_bg(row, w, pointer=True))
+                content: str = f"{label} {cap}{dlt}"
+                rows.append((W.inner_sel(content, right_w), True))
+            elif is_cursor:
+                # Cursor on this row but not editing — no brackets
+                content = f"{label} {cap_g}{dlt_g}"
+                rows.append((W.inner_sel(content, right_w), True))
             else:
-                row = f"{label} {cap_g}{dlt_g}"
-                lines.append(W.line(row, w))
-
-        lines.append(W.line("", w))
-        lines.append(W.bottom_border(w))
-
-        self.renderer.render(lines)
+                content = f"{label} {cap_g}{dlt_g}"
+                rows.append((W.inner_line(content, right_w), False))
+        return rows, right_w
 
     # ── Idle key handling ─────────────────────────────────
 
     def handle_idle_key(self, key: bytes) -> bool:
         """Process a single keypress in idle state.
 
-        Args:
-            key: Raw key bytes (K constant or raw scan code).
+        Column switching: ``→`` in the left column moves focus to the
+        right panel; ``←`` in the right panel (when not editing) moves
+        focus back to the left menu.
 
-        Returns:
-            ``True`` to continue the idle loop, ``False`` to exit.
+        Edit mode: in the right panel, ``Enter`` enters edit mode for
+        the focused row (steps: delay adjustment; features: action
+        toggle).  In edit mode ``←→`` adjusts the value instead of
+        switching columns.  ``Esc`` exits edit mode; a second ``Enter``
+        on a step runs from that row.
         """
         if self.store is None:
             return False
 
-        idx: int = self.nav.index
-        steps: list[StepConfig] = self.get_steps()
-        slot_start: int = 1 + self._count_nav_steps(steps)
+        # Dismiss the missing-feature message on the first keypress.
+        if self._missing_msg:
+            self._missing_msg = ""
 
-        # ── ←→ / Shift+←→: adjust delay on step rows / toggle action on slot rows ──
-        if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
-            if idx >= 1 and idx < slot_start:
-                # Step row: adjust delay directly (no Enter needed)
-                # Shift+arrow = ±1000ms, regular arrow = ±10ms
-                delta: int = 1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 10
-                sign: int = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
-                self._adjust_step_delay(idx - 1, sign * delta)
-            elif idx >= slot_start and key in (K.LEFT, K.RIGHT):
-                # Slot row: toggle 截取/删除 (Shift+arrow ignored on slots)
-                self._slot_action = 1 if self._slot_action == 0 else 0
-            return True
-
-        # ── ↑↓: navigate ──
-        if key in (K.UP, K.DOWN):
-            old = idx
-            self.nav.handle(key)
-            if old != self.nav.index and self.nav.index >= slot_start:
-                self._slot_action = 0
-            return True
-
-        # ── Enter: start / execute slot action ──
-        if key == K.ENTER:
-            if idx == 0 and self._can_start():
-                # 启动前先激活游戏窗口，避免用户手动 Alt+Tab
-                from core.focus import activate_game_window
-                if not activate_game_window():
-                    # 未找到游戏窗口，拒绝启动
-                    return True
-                self.state = "running"
-            elif idx >= slot_start:
-                if self._slot_action == 0:
-                    self._capture_feature()
-                else:
-                    self._delete_feature()
-            return True
-
-        # ── Esc / Backspace: exit ──
+        # Esc / Backspace:
+        # - Right panel + editing → exit edit mode (stay in right panel)
+        # - Right panel + not editing → back to left menu
+        # - Left menu → exit task
         if key in (K.ESC, K.BS):
+            if self.col_focus == "right":
+                if self.right_editing:
+                    self.right_editing = False
+                else:
+                    self.col_focus = "left"
+                return True
             return False
 
+        if self.col_focus == "left":
+            return self._handle_left_key(key)
+        return self._handle_right_key(key)
+
+    def _handle_left_key(self, key: bytes) -> bool:
+        """Handle keys when the left menu is focused.
+
+        Up/Down moves the cursor through the left menu **without**
+        changing the right-panel view — the view only changes on Enter.
+        ``→`` moves focus into the right panel.  Enter on ``开始运行``
+        starts a run; Enter on ``执行图`` / ``特征库`` opens that
+        content in the right panel (focus stays on the left menu).
+        """
+        if key in (K.UP, K.DOWN):
+            self.left_nav.handle(key)
+            return True
+
+        if key in (K.RIGHT,):
+            # → moves cursor into the right panel
+            self.col_focus = "right"
+            self.right_editing = False
+            self._sync_right_nav()
+            return True
+
+        if key == K.ENTER:
+            if self.left_nav.index == 0:
+                # 开始运行 → run from top
+                if self._can_start():
+                    from core.focus import activate_game_window
+                    if activate_game_window():
+                        self._start_node = None
+                        self.state = "running"
+            elif self.left_nav.index == 1:
+                # 执行图 → open in right panel (focus stays on left)
+                self.right_view = "steps"
+                self._sync_right_nav()
+            elif self.left_nav.index == 2:
+                # 特征库 → open in right panel (focus stays on left)
+                self.right_view = "features"
+                self._sync_right_nav()
+            return True
+
+        return True
+
+    def _handle_right_key(self, key: bytes) -> bool:
+        """Handle keys when the right panel is focused.
+
+        **Not editing** (default):
+        - Up/Down: navigate rows
+        - ``←``: back to left menu
+        - ``→``: no-op (already in right panel)
+        - Enter: enter edit mode for the focused row
+
+        **Editing** (after Enter):
+        - Steps: ``←→`` adjusts delay (Shift = ±1000ms); Up/Down moves
+          (stays in edit mode); Enter runs from this row.
+        - Features: ``←→`` toggles 截取/删除; Enter executes the
+          selected action.
+        """
+        steps: list[StepConfig] = self.get_steps()
+
+        if self.right_view == "steps":
+            if not self.right_editing:
+                # ── Default mode ──
+                if key in (K.UP, K.DOWN):
+                    self.right_nav.handle(key)
+                    return True
+                if key == K.LEFT:
+                    # ← back to left menu
+                    self.col_focus = "left"
+                    return True
+                if key == K.RIGHT:
+                    # → no-op (already in right panel)
+                    return True
+                if key == K.ENTER:
+                    # Enter edit mode for delay adjustment
+                    self.right_editing = True
+                    return True
+                return True
+
+            # ── Edit mode (step delay) ──
+            if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
+                delta: int = 1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 10
+                sign: int = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
+                self._adjust_step_delay(self.right_nav.index, sign * delta)
+                return True
+            if key in (K.UP, K.DOWN):
+                # Navigate stays in edit mode
+                self.right_nav.handle(key)
+                return True
+            if key == K.ENTER:
+                # Run from this row
+                nav_steps = list(self._iter_nav_steps(steps))
+                if 0 <= self.right_nav.index < len(nav_steps):
+                    step, _t = nav_steps[self.right_nav.index]
+                    if self._can_start() and step.node_id:
+                        from core.focus import activate_game_window
+                        if activate_game_window():
+                            self._start_node = step.node_id
+                            self.right_editing = False
+                            self.state = "running"
+                return True
+            return True
+
+        # ── Features view ──
+        if not self.right_editing:
+            if key in (K.UP, K.DOWN):
+                old = self.right_nav.index
+                self.right_nav.handle(key)
+                if old != self.right_nav.index:
+                    self._slot_action = 0
+                return True
+            if key == K.LEFT:
+                self.col_focus = "left"
+                return True
+            if key == K.RIGHT:
+                return True
+            if key == K.ENTER:
+                self.right_editing = True
+                return True
+            return True
+
+        # Edit mode (features)
+        if key in (K.LEFT, K.RIGHT):
+            self._slot_action = 1 if self._slot_action == 0 else 0
+            return True
+        if key in (K.UP, K.DOWN):
+            old = self.right_nav.index
+            self.right_nav.handle(key)
+            if old != self.right_nav.index:
+                self._slot_action = 0
+            return True
+        if key == K.ENTER:
+            if self._slot_action == 0:
+                self._capture_feature()
+            else:
+                self._delete_feature()
+            self.right_editing = False
+            return True
         return True
 
     # ── Internal helpers ──────────────────────────────────
 
     def _can_start(self) -> bool:
-        """Return ``True`` if all 4 feature slots have templates."""
-        if self.store is None:
-            return False
-        return all(slot.has_template() for slot in self.store)
+        """Return ``True`` if a run can start.
 
-    def _missing_feature_types(self) -> list[str]:
-        """Return list of missing slot Chinese labels for UI hints."""
-        if self.store is None:
-            return []
-        missing: list[str] = []
-        for slot in self.store:
-            if not slot.has_template():
-                label = self.store.SLOT_LABELS.get(
-                    slot.feature_type, slot.feature_type
-                )
-                missing.append(label)
-        return missing
+        Missing feature templates do **not** block start — the run will
+        stop at the first ``match`` step whose feature is missing (see
+        :meth:`_execute_tree`).  Only the store must exist.
+        """
+        return self.store is not None
 
     def _adjust_step_delay(self, nav_idx: int, delta_ms: int) -> None:
         """Adjust the delay of the navigable node at *nav_idx* by *delta_ms*.
 
-        Finds the :class:`StepConfig` or :class:`Branch` at the given
-        navigable index (using :meth:`_iter_nav_steps`), applies the delta
-        (clamped to >= 0), and hot-saves the full step tree to config.
-
-        Args:
-            nav_idx: Zero-based index into the navigable steps list
-                     (i.e. ``self.nav.index - 1`` since the start button
-                     occupies navigator index 0).
-            delta_ms: Milliseconds to add (positive) or subtract (negative).
+        *nav_idx* is 0-based into the navigable steps list (i.e.
+        ``right_nav.index`` in the steps view).
         """
         steps: list[StepConfig] = self.get_steps()
         nav_steps: list[tuple[StepConfig, str]] = list(
@@ -470,33 +663,20 @@ class BaseTask(ABC):
         step, _nav_type = nav_steps[nav_idx]
         new_ms: int = max(0, int(step.delay * 1000) + delta_ms)
         step.delay = new_ms / 1000.0
-        # Hot-save to config (serialise the full tree)
         if self.store is not None:
             steps_data: list[dict] = [self._step_to_dict(s) for s in steps]
             self.store.save_steps(steps_data)
 
     def _capture_feature(self) -> None:
-        """Capture a feature for the currently selected slot.
-
-        Uses the slot-based capture workflow (no type selection, no naming).
-        """
+        """Capture a feature for the currently selected slot."""
         if self.store is None:
             return
-
-        sel: int = self.nav.index
-        steps: list[StepConfig] = self.get_steps()
-        slot_start: int = 1 + self._count_nav_steps(steps)
-        if sel < slot_start:
-            # Start button selected — nothing to capture
-            return
-        slot_idx: int = sel - slot_start  # skip start + steps
-
+        slot_idx: int = self.right_nav.index
         slots_list = list(self.store)
         if slot_idx < 0 or slot_idx >= len(slots_list):
             return
         slot = slots_list[slot_idx]
 
-        # Lazy import to avoid circular dependency
         from core.feature_editor import capture_slot_feature
 
         data_dir = getattr(self, "data_dir", None)
@@ -509,46 +689,33 @@ class BaseTask(ABC):
         if success:
             self.store.save()
             self.store.load_all_templates()
-        self.nav.n_items = 1 + self._count_nav_steps(steps) + len(self.store)
+        self._sync_right_nav()
         self.renderer.reset()
 
     def _delete_feature(self) -> None:
         """Delete the currently selected slot's template."""
         if self.store is None:
             return
-
-        sel: int = self.nav.index
-        steps: list[StepConfig] = self.get_steps()
-        slot_start: int = 1 + self._count_nav_steps(steps)
-        if sel < slot_start:
-            # Start button selected — nothing to delete
-            return
-        slot_idx: int = sel - slot_start  # skip start + steps
-
+        slot_idx: int = self.right_nav.index
         slots_list = list(self.store)
         if slot_idx < 0 or slot_idx >= len(slots_list):
             return
         slot = slots_list[slot_idx]
 
         if not slot.has_template() and slot.template_file is None:
-            return  # Nothing to delete
+            return
 
         self.store.clear_slot(slot.feature_type)
         self.store.save()
         self.store.load_all_templates()
-        self.nav.n_items = 1 + self._count_nav_steps(steps) + len(self.store)
+        self._sync_right_nav()
         self.renderer.reset()
 
-    # ── Tree helpers (idle execution graph) ──────────────
+    # ── Tree helpers (execution graph) ────────────────────
 
     @staticmethod
     def _iter_steps(steps: list[StepConfig]):
-        """Yield every :class:`StepConfig` in depth-first order.
-
-        Visits each step, then recurses into ``children`` followed by
-        each branch's ``steps``.  Used for serialisation and width
-        calculation — includes **all** steps (navigable and non-navigable).
-        """
+        """Yield every :class:`StepConfig` in depth-first order."""
         for s in steps:
             yield s
             if s.children:
@@ -559,17 +726,7 @@ class BaseTask(ABC):
 
     @classmethod
     def _iter_nav_steps(cls, steps: list[StepConfig]):
-        """Yield ``(node, nav_type)`` for navigable nodes only.
-
-        Navigable nodes are those whose delay value can be edited:
-        - ``keypress`` / ``click`` / ``hold`` → ``("delay")``  (delay shown on left)
-        - ``wait`` → ``("wait")``  (the wait duration)
-        - ``match`` → ``("match_delay")``  (wait before screenshot)
-        - ``press`` / ``release`` → ``("delay")``  (future action types)
-
-        ``Branch`` is **not** navigable — it's a decision point with no
-        delay; the wait happens on the ``match`` step (before screenshot).
-        """
+        """Yield ``(node, nav_type)`` for navigable nodes only."""
         for s in steps:
             if s.type in ("keypress", "click", "hold", "press", "release"):
                 yield (s, "delay")
@@ -585,17 +742,11 @@ class BaseTask(ABC):
 
     @classmethod
     def _count_nav_steps(cls, steps: list[StepConfig]) -> int:
-        """Count navigable nodes (keypress + wait + match)."""
+        """Count navigable nodes."""
         return sum(1 for _ in cls._iter_nav_steps(steps))
 
     def _match_feature_label(self, step: StepConfig) -> str:
-        """解析 match 步骤的特征名称（用 SLOT_LABELS 映射 feature_type）。
-
-        feature_type 格式如 ``"race_finished"`` 或
-        ``"car_present/car_absent"``，映射后返回 ``"比赛完成"`` 或
-        ``"有车状态/无车状态"``。无 store 或无 feature_type 时回退
-        到 ``step.name``。
-        """
+        """Resolve a match step's feature name via ``SLOT_LABELS``."""
         if not step.feature_type or self.store is None:
             return step.name
         parts: list[str] = step.feature_type.split("/")
@@ -611,16 +762,7 @@ class BaseTask(ABC):
         samples: list[str],
         running: bool = False,
     ) -> None:
-        """Collect display-width sample strings for panel width calculation.
-
-        Traverses the step tree in the same depth-first order as
-        :meth:`_render_step_tree`, accumulating actual branch prefixes
-        (not a fixed sample) so deep branches are accounted for.
-
-        ``match`` steps render as ``每隔 N ms 检测 {特征名}``;
-        their branches render at the match step's own level with
-        delay prefixes.
-        """
+        """Collect plain-text sample strings for right-column width calc."""
         for i, step in enumerate(steps):
             is_last: bool = i == len(steps) - 1
             connector: str = "\u2514\u2500 " if is_last else "\u251c\u2500 "
@@ -631,7 +773,7 @@ class BaseTask(ABC):
                 label: str = action_label(step.type)
                 samples.append(
                     f"{full_prefix}等待 {int(step.delay * 1000)} ms "
-                    f"{label} {step.key.upper()}"
+                    f"{label} {(step.key or '').upper()}"
                 )
             elif step.type == "wait":
                 samples.append(
@@ -647,7 +789,9 @@ class BaseTask(ABC):
                 samples.append(f"{full_prefix}{step.name}")
 
             for child in (step.children or []):
-                self._collect_width_samples([child], child_prefix, samples, running)
+                self._collect_width_samples(
+                    [child], child_prefix, samples, running,
+                )
 
             for bi, branch in enumerate(step.branches or []):
                 branch_last: bool = bi == len((step.branches or [])) - 1
@@ -664,50 +808,21 @@ class BaseTask(ABC):
                     branch.steps, branch_child_prefix, samples, running,
                 )
 
-    def _render_step_tree(
+    def _render_step_inner(
         self,
         step: StepConfig,
         prefix: str,
         is_last: bool,
-        lines: list[str],
-        w: int,
+        rows: list[tuple[str, bool]],
+        right_w: int,
         nav_idx: int,
         running: bool = False,
     ) -> int:
-        """Render a step (and its children/branches) as tree rows.
+        """Render a step (and its children/branches) as inner rows.
 
-        Rendering rules per step type:
-        - ``keypress`` / ``click``: one row — ``等待 N ms  点击 KEY``
-          (navigable, delay adjustable via ←→ / Shift+←→).
-        - ``wait``: one row (navigable).
-        - ``match``: one row — ``每隔 N ms 检测 {特征名}``
-          (navigable, delay adjustable via ←→ / Shift+←→).
-          Its branches render one level deeper, with condition labels
-          in purple (MAUVE).
-
-        Idle mode (*running* = False):
-        - Labels plain, time numbers yellow, key names blue.
-        - Selected rows use background highlight + ``›`` pointer.
-
-        Running mode (*running* = True):
-        - ``current`` step uses background highlight + ``›`` pointer
-          (same as idle selected) to indicate progress.
-        - ``done`` steps render normally (no mark).
-        - ``dimmed`` steps (branch not taken) render in gray.
-        - No nav selection (nav index ignored).
-
-        Args:
-            step: Current step node.
-            prefix: Accumulated ancestor connectors (excludes this node's
-                    own connector).
-            is_last: Whether *step* is the last sibling on its level.
-            lines: Output line list (appended in place).
-            w: Panel width.
-            nav_idx: Navigator index for the next navigable row.
-            running: If True, render runtime-status display (locked).
-
-        Returns:
-            The next available navigator index after this subtree.
+        Like :meth:`_render_step_tree` but appends ``(inner_str, selected)``
+        tuples for the two-column composer instead of full box lines.
+        Returns the next available navigator index.
         """
         connector: str = "\u2514\u2500 " if is_last else "\u251c\u2500 "
         full_prefix: str = prefix + connector
@@ -716,63 +831,100 @@ class BaseTask(ABC):
         status: str = step.runtime_status if running else ""
 
         if step.type in ("keypress", "click", "press", "release", "hold"):
-            # ── Click row ──
             label: str = action_label(step.type)
             delay_ms: int = int(step.delay * 1000)
-            is_sel: bool = ((not running) and (self.nav.index == nav_idx)) or \
-                           (running and status == _ST_CUR)
+            is_sel: bool = (
+                (not running) and self.col_focus == "right"
+                and self.right_nav.index == nav_idx
+            ) or (running and status == _ST_CUR)
             if running:
-                display_ms = (step.runtime_remaining_ms if status == _ST_CUR
-                              and step.runtime_remaining_ms is not None else delay_ms)
-                content = self._runtime_click_content(status, label, display_ms, step.key)
-            else:
-                content = (
-                    f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms "
-                    f"{label} {C.BLUE}{step.key.upper()}{C.RESET}"
+                display_ms = (
+                    step.runtime_remaining_ms if status == _ST_CUR
+                    and step.runtime_remaining_ms is not None else delay_ms
                 )
-            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
+                content = self._runtime_click_content(
+                    status, label, display_ms, step.key,
+                )
+            else:
+                # Underline the delay when this row is being edited.
+                is_edit: bool = is_sel and self.right_editing
+                ms_str: str = (
+                    f"{C.UNDERLINE}{C.BOLD}{C.YELLOW}{delay_ms}{C.RESET}"
+                    if is_edit else f"{C.YELLOW}{delay_ms}{C.RESET}"
+                )
+                content = (
+                    f"等待 {ms_str} ms "
+                    f"{label} {C.BLUE}{(step.key or '').upper()}{C.RESET}"
+                )
+            rows.append((
+                W.inner_tree(content, right_w, prefix=full_prefix, selected=is_sel),
+                is_sel,
+            ))
             nav_idx += 1
 
         elif step.type == "wait":
-            # ── Wait row ──
             delay_ms = int(step.delay * 1000)
-            is_sel = ((not running) and (self.nav.index == nav_idx)) or \
-                     (running and status == _ST_CUR)
+            is_sel = (
+                (not running) and self.col_focus == "right"
+                and self.right_nav.index == nav_idx
+            ) or (running and status == _ST_CUR)
             if running:
-                display_ms = (step.runtime_remaining_ms if status == _ST_CUR
-                              and step.runtime_remaining_ms is not None else delay_ms)
+                display_ms = (
+                    step.runtime_remaining_ms if status == _ST_CUR
+                    and step.runtime_remaining_ms is not None else delay_ms
+                )
                 content = self._runtime_wait_content(status, display_ms)
             else:
-                content = f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
-            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
+                is_edit = is_sel and self.right_editing
+                ms_str = (
+                    f"{C.UNDERLINE}{C.BOLD}{C.YELLOW}{delay_ms}{C.RESET}"
+                    if is_edit else f"{C.YELLOW}{delay_ms}{C.RESET}"
+                )
+                content = f"等待 {ms_str} ms"
+            rows.append((
+                W.inner_tree(content, right_w, prefix=full_prefix, selected=is_sel),
+                is_sel,
+            ))
             nav_idx += 1
 
         elif step.type == "match":
-            # ── Match row (navigable, delay = wait before screenshot) ──
             delay_ms = int(step.delay * 1000)
             feat_label: str = self._match_feature_label(step)
-            is_sel = ((not running) and (self.nav.index == nav_idx)) or \
-                     (running and status == _ST_CUR)
+            is_sel = (
+                (not running) and self.col_focus == "right"
+                and self.right_nav.index == nav_idx
+            ) or (running and status == _ST_CUR)
             if running:
-                display_ms = (step.runtime_remaining_ms if status == _ST_CUR
-                              and step.runtime_remaining_ms is not None else delay_ms)
-                content = self._runtime_match_content(status, display_ms, feat_label)
+                display_ms = (
+                    step.runtime_remaining_ms if status == _ST_CUR
+                    and step.runtime_remaining_ms is not None else delay_ms
+                )
+                content = self._runtime_match_content(
+                    status, display_ms, feat_label,
+                )
             else:
+                is_edit = is_sel and self.right_editing
+                ms_str = (
+                    f"{C.UNDERLINE}{C.BOLD}{C.YELLOW}{delay_ms}{C.RESET}"
+                    if is_edit else f"{C.YELLOW}{delay_ms}{C.RESET}"
+                )
                 content = (
-                    f"每隔 {C.YELLOW}{delay_ms}{C.RESET} ms "
+                    f"每隔 {ms_str} ms "
                     f"检测 {feat_label}"
                 )
-            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
+            rows.append((
+                W.inner_tree(content, right_w, prefix=full_prefix, selected=is_sel),
+                is_sel,
+            ))
             nav_idx += 1
 
         else:
-            # Unknown type — render name as-is
-            if running:
-                content = self._runtime_plain_content(status, step.name)
-            else:
-                content = step.name
+            content = step.name
             is_sel = running and status == _ST_CUR
-            lines.append(W.tree_line(content, w, prefix=full_prefix, selected=is_sel))
+            rows.append((
+                W.inner_tree(content, right_w, prefix=full_prefix, selected=is_sel),
+                is_sel,
+            ))
 
         # ── Children and branches ──
         children: list[StepConfig] = step.children or []
@@ -780,8 +932,8 @@ class BaseTask(ABC):
 
         for ci, child in enumerate(children):
             child_last: bool = (ci == len(children) - 1) and not branches
-            nav_idx = self._render_step_tree(
-                child, child_prefix, child_last, lines, w, nav_idx, running,
+            nav_idx = self._render_step_inner(
+                child, child_prefix, child_last, rows, right_w, nav_idx, running,
             )
 
         branch_base: str = child_prefix
@@ -792,7 +944,6 @@ class BaseTask(ABC):
                 "\u2514\u2500 " if branch_last else "\u251c\u2500 "
             )
             branch_prefix: str = branch_base + branch_connector
-            # Branch condition row — not navigable, no delay (decision point)
             if running:
                 b_status: str = branch.runtime_status
                 b_content = self._runtime_branch_content(b_status, branch.condition)
@@ -800,17 +951,18 @@ class BaseTask(ABC):
             else:
                 b_content = f"{C.MAUVE}{branch.condition}{C.RESET}"
                 b_sel = False
-            lines.append(W.tree_line(
-                b_content, w, prefix=branch_prefix, selected=b_sel,
+            rows.append((
+                W.inner_tree(b_content, right_w, prefix=branch_prefix, selected=b_sel),
+                b_sel,
             ))
-            # Steps inside this branch
             branch_child_prefix: str = branch_base + (
                 "   " if branch_last else "\u2502  "
             )
             for si, sub_step in enumerate(branch.steps):
                 sub_last: bool = si == len(branch.steps) - 1
-                nav_idx = self._render_step_tree(
-                    sub_step, branch_child_prefix, sub_last, lines, w, nav_idx, running,
+                nav_idx = self._render_step_inner(
+                    sub_step, branch_child_prefix, sub_last, rows, right_w,
+                    nav_idx, running,
                 )
 
         return nav_idx
@@ -821,13 +973,6 @@ class BaseTask(ABC):
     def _runtime_click_content(
         status: str, label: str, delay_ms: int, key_name: str | None,
     ) -> str:
-        """Build the content string for a click row in running mode.
-
-        - ``dimmed``: all gray (branch not taken).
-        - other: labels plain, time yellow, key blue.
-        - ``current`` highlighting is handled by ``tree_line(selected=True)``
-          in the caller, not by content styling.
-        """
         key_disp = (key_name or "").upper()
         if status == _ST_DIM:
             return f"{C.GRAY}等待 {delay_ms} ms {label} {key_disp}{C.RESET}"
@@ -838,7 +983,6 @@ class BaseTask(ABC):
 
     @staticmethod
     def _runtime_wait_content(status: str, delay_ms: int) -> str:
-        """Build the content string for a wait row in running mode."""
         if status == _ST_DIM:
             return f"{C.GRAY}等待 {delay_ms} ms{C.RESET}"
         return f"等待 {C.YELLOW}{delay_ms}{C.RESET} ms"
@@ -847,46 +991,28 @@ class BaseTask(ABC):
     def _runtime_match_content(
         status: str, delay_ms: int, feature_label: str,
     ) -> str:
-        """Build the content string for a match row in running mode.
-
-        - ``dimmed``: gray (branch not taken).
-        - other: ``每隔 N ms 检测 {特征名}`` (delay = wait before screenshot).
-        """
         if status == _ST_DIM:
             return f"{C.GRAY}每隔 {delay_ms} ms 检测 {feature_label}{C.RESET}"
         return f"每隔 {C.YELLOW}{delay_ms}{C.RESET} ms 检测 {feature_label}"
 
     @staticmethod
     def _runtime_branch_content(status: str, name: str) -> str:
-        """Build the content string for a branch condition row in running mode.
-
-        - ``dimmed``: gray (branch not taken).
-        - other: purple (MAUVE) condition name.
-        """
         if status == _ST_DIM:
             return f"{C.GRAY}{name}{C.RESET}"
         return f"{C.MAUVE}{name}{C.RESET}"
 
-    @staticmethod
-    def _runtime_plain_content(status: str, name: str) -> str:
-        """Build the content string for a plain row in running mode."""
-        if status == _ST_DIM:
-            return f"{C.GRAY}{name}{C.RESET}"
-        return name
+    # ── Serialisation ─────────────────────────────────────
 
     @staticmethod
     def _step_to_dict(step: StepConfig) -> dict:
-        """Serialise a :class:`StepConfig` (and its subtree) to a dict.
-
-        ``runtime_status`` is intentionally excluded — it is a
-        transient field reset before each run.
-        """
+        """Serialise a :class:`StepConfig` (and its subtree) to a dict."""
         d: dict = {
             "name": step.name,
             "type": step.type,
             "key": step.key,
             "delay": step.delay,
             "feature_type": step.feature_type,
+            "fallback_key": step.fallback_key,
             "node_id": step.node_id,
         }
         if step.children:
@@ -905,18 +1031,14 @@ class BaseTask(ABC):
 
     @staticmethod
     def _step_from_dict(d: dict) -> StepConfig:
-        """Deserialise a :class:`StepConfig` (and its subtree) from a dict.
-
-        Inverse of :meth:`_step_to_dict`.  Used to load saved step trees
-        from the config file so that inline-edited delays persist across
-        sessions.
-        """
+        """Deserialise a :class:`StepConfig` from a dict."""
         step = StepConfig(
             name=d.get("name", ""),
             type=d.get("type", "keypress"),
             key=d.get("key"),
             delay=d.get("delay", 0.05),
             feature_type=d.get("feature_type"),
+            fallback_key=d.get("fallback_key"),
             node_id=d.get("node_id"),
         )
         if d.get("children"):
@@ -940,11 +1062,7 @@ class BaseTask(ABC):
 
     @staticmethod
     def _reset_runtime_status(steps: list[StepConfig]) -> None:
-        """Clear ``runtime_status`` on every node in the step tree.
-
-        Called before each run iteration so the execution graph starts
-        in a clean state.  Also clears :class:`Branch` nodes.
-        """
+        """Clear ``runtime_status`` on every node in the step tree."""
         for s in steps:
             s.runtime_status = ""
             s.runtime_remaining_ms = None
@@ -960,11 +1078,7 @@ class BaseTask(ABC):
         steps: list[StepConfig],
         mapping: dict[str, StepConfig | Branch],
     ) -> None:
-        """Build a ``node_id → node`` lookup for runtime status updates.
-
-        Walks the tree depth-first, registering every :class:`StepConfig`
-        and :class:`Branch` that has a non-empty ``node_id``.
-        """
+        """Build a ``node_id → node`` lookup for runtime status updates."""
         for s in steps:
             if s.node_id:
                 mapping[s.node_id] = s
@@ -976,18 +1090,419 @@ class BaseTask(ABC):
                         mapping[b.node_id] = b
                     BaseTask._build_node_map(b.steps, mapping)
 
-    # ── Focus guard integration ───────────────────────────
+    @classmethod
+    def _subtree_node_ids(cls, steps: list[StepConfig]) -> list[str]:
+        """Collect every ``node_id`` in a subtree (depth-first)."""
+        ids: list[str] = []
+        for s in steps:
+            if s.node_id:
+                ids.append(s.node_id)
+            if s.children:
+                ids.extend(cls._subtree_node_ids(s.children))
+            if s.branches:
+                for b in s.branches:
+                    if b.node_id:
+                        ids.append(b.node_id)
+                    ids.extend(cls._subtree_node_ids(b.steps))
+        return ids
 
-    def _make_guard(
-        self,
-        tree_w: int,
-    ) -> FocusGuard:
-        """Create a :class:`FocusGuard` for失焦即终止运行。
+    # ── Generic tree executor ─────────────────────────────
 
-        失焦时调用 ``on_exit`` 回调（这里无额外操作，终止由
-        :meth:`_run_core_loop` 的返回值处理）。
-        """
+    def _make_guard(self) -> FocusGuard:
+        """Create a :class:`FocusGuard` (失焦即终止运行)."""
         return FocusGuard()
+
+    def _feature_ready(self, feature_type: str) -> bool:
+        """Return ``True`` if *feature_type*'s slot has a template + region."""
+        if self.store is None:
+            return False
+        slot = self.store.get_slot(feature_type)
+        return (
+            slot is not None
+            and slot.has_template()
+            and slot.region is not None
+        )
+
+    def _branch_feature_type(self, branch: Branch) -> str | None:
+        """Map a branch's condition label back to a feature type.
+
+        Uses the reverse of :attr:`FeatureStore.SLOT_LABELS`.
+        """
+        if self.store is None:
+            return None
+        rev = {v: k for k, v in self.store.SLOT_LABELS.items()}
+        return rev.get(branch.condition)
+
+    def _execute_tree(self, start_node_id: str | None = None) -> None:
+        """Generic tree-walking executor — drives the whole run.
+
+        Walks :meth:`get_steps` in execution order, handling
+        ``keypress`` / ``hold`` / ``wait`` / ``match`` steps:
+
+        - ``match`` **with branches**: countdown, screenshot, take the
+          branch whose feature matches; if none matches, press
+          ``fallback_key`` (if any) and loop.
+        - ``match`` **without branches**: loop {countdown, screenshot}
+          until the feature is detected, then continue.
+
+        ``branch.loop == "结束"`` ends the run (and increments
+        ``stats["found"]``); any other value loops back to the top.
+
+        When *start_node_id* is set, the first pass skips nodes before
+        it (descending into the branch that contains it); subsequent
+        passes run from the top.
+
+        Stops (returns) on: user interrupt (Esc/Enter), focus loss,
+        missing feature at a ``match`` step, or an ``"结束"`` branch.
+        """
+        if self.store is None:
+            return
+
+        drain_keyboard()
+        self._run_state = "running"
+        self._start_node = start_node_id
+        self._missing_msg = ""
+
+        steps: list[StepConfig] = self.get_steps()
+        self._node_map = {}
+        self._build_node_map(steps, self._node_map)
+
+        guard: FocusGuard = self._make_guard()
+        self._guard = guard
+
+        # Wait for the game window to be fully in the foreground.
+        _focus_ok: bool = False
+        for _ in range(10):
+            if guard.check():
+                _focus_ok = True
+                break
+            time.sleep(0.05)
+        if not _focus_ok:
+            return
+
+        self._skip_active = start_node_id is not None
+
+        try:
+            while True:
+                key = try_get_key()
+                if key is not None and key in (K.ESC, K.BS, K.ENTER):
+                    return
+                if not guard.check():
+                    return
+
+                self.stats["attempts"] += 1
+                self._reset_runtime_status(steps)
+
+                sig: str = self._walk(steps)
+                if sig in ("end", "stop"):
+                    return
+                # "continue" → loop again from the top; first pass done.
+                self._skip_active = False
+                self._start_node = None
+        except _PauseExit:
+            return
+
+    def _walk(self, steps: list[StepConfig]) -> str:
+        """Walk a step list; return ``"continue"`` | ``"end"`` | ``"stop"``."""
+        for step in steps:
+            if self._skip_active:
+                if step.node_id == self._start_node:
+                    self._skip_active = False
+                    sig = self._exec_step(step)
+                    if sig != "continue":
+                        return sig
+                elif self._start_in_subtree(step):
+                    sig = self._descend_skipped(step)
+                    if sig != "continue":
+                        return sig
+                # else: skip entirely
+                continue
+            sig = self._exec_step(step)
+            if sig != "continue":
+                return sig
+        return "continue"
+
+    def _descend_skipped(self, step: StepConfig) -> str:
+        """Skip a step's own action but descend into the sub-branch
+        containing the start node (used during first-pass skipping)."""
+        if step.children:
+            sig = self._walk(step.children)
+            if sig != "continue":
+                return sig
+        for b in (step.branches or []):
+            if self._start_in_branch(b):
+                if b.node_id:
+                    self._set(b.node_id, _ST_DONE)
+                self._dim_other_branches(step, b)
+                sig = self._walk(b.steps)
+                if sig != "continue":
+                    return sig
+                return self._branch_loop_signal(b)
+        return "continue"
+
+    def _exec_step(self, step: StepConfig) -> str:
+        """Execute one step; return ``"continue"`` | ``"end"`` | ``"stop"``."""
+        t: str = step.type
+        if t in ("keypress", "click"):
+            self._press_step(step)
+        elif t == "hold":
+            self._hold_step(step)
+        elif t == "wait":
+            self._wait_step(step)
+        elif t == "match":
+            return self._match_step(step)
+        # Non-match: recurse into children (branches belong to match only).
+        if step.children:
+            return self._walk(step.children)
+        return "continue"
+
+    def _match_step(self, step: StepConfig) -> str:
+        """Execute a ``match`` step (branched or branchless)."""
+        ftypes: list[str] = [f for f in (step.feature_type or "").split("/") if f]
+
+        # Spec: missing feature → stop the run with a message.
+        missing = [f for f in ftypes if not self._feature_ready(f)]
+        if missing:
+            labels = [
+                (self.store.SLOT_LABELS.get(f, f) if self.store else f)
+                for f in missing
+            ]
+            self._missing_msg = "、".join(labels)
+            self._set(step.node_id, _ST_DONE)
+            self._render()
+            time.sleep(0.5)
+            return "stop"
+
+        fallback: float = self.store.settings.get(
+            "global_threshold_fallback", 0.85,
+        )
+
+        if step.branches:
+            # One countdown, then decide which branch matches.
+            self._set(step.node_id, _ST_CUR)
+            self._render()
+            self._countdown(step, step.delay)
+            self._interrupted()  # raises _PauseExit if interrupted
+            self._set(step.node_id, _ST_DONE)
+
+            taken: Branch | None = None
+            for b in step.branches:
+                ftype = self._branch_feature_type(b)
+                if ftype and self.store.match_slot(ftype)[1] >= fallback:
+                    taken = b
+                    break
+
+            if taken is None:
+                # No branch matched → fallback
+                self._dim_all_branches(step)
+                if step.fallback_key:
+                    self._press_guarded(step.fallback_key)
+                return "continue"
+
+            self._dim_other_branches(step, taken)
+            self._set(taken.node_id, _ST_DONE)
+            sig = self._walk(taken.steps)
+            if sig != "continue":
+                return sig
+            return self._branch_loop_signal(taken)
+
+        # Branchless match: loop {countdown, screenshot} until detected.
+        ftype = ftypes[0] if ftypes else None
+        while True:
+            self._set(step.node_id, _ST_CUR)
+            self._render()
+            self._countdown(step, step.delay)
+            self._interrupted()
+            conf: float = self.store.match_slot(ftype)[1] if ftype else 0.0
+            if conf >= fallback:
+                self._set(step.node_id, _ST_DONE)
+                break
+        return "continue"
+
+    def _branch_loop_signal(self, b: Branch) -> str:
+        """Resolve a branch's loop label to an executor signal."""
+        if b.loop == "结束":
+            self.stats["found"] += 1
+            return "end"
+        return "continue"
+
+    # ── Step action primitives ────────────────────────────
+
+    def _press_step(self, step: StepConfig) -> None:
+        """Mark CUR → countdown → press key → mark DONE."""
+        self._set(step.node_id, _ST_CUR)
+        self._render()
+        self._countdown(step, step.delay)
+        self._interrupted()
+        if not self._guard.check():
+            raise _PauseExit()
+        if step.key:
+            pyautogui.press(step.key)
+        self._set(step.node_id, _ST_DONE)
+
+    def _hold_step(self, step: StepConfig) -> None:
+        """Mark CUR → keyDown → countdown (hold duration) → keyUp → DONE."""
+        self._set(step.node_id, _ST_CUR)
+        self._render()
+        if not self._guard.check():
+            raise _PauseExit()
+        if step.key:
+            pyautogui.keyDown(step.key)
+        try:
+            self._countdown(step, step.delay)
+        finally:
+            if step.key:
+                pyautogui.keyUp(step.key)
+        self._set(step.node_id, _ST_DONE)
+
+    def _wait_step(self, step: StepConfig) -> None:
+        """Mark CUR → countdown → DONE."""
+        self._set(step.node_id, _ST_CUR)
+        self._render()
+        self._countdown(step, step.delay)
+        self._interrupted()
+        self._set(step.node_id, _ST_DONE)
+
+    def _press_guarded(self, key_name: str, interval: float = 0.15) -> None:
+        """Press a key without status tracking (fallback path)."""
+        if not self._guard.check():
+            raise _PauseExit()
+        pyautogui.press(key_name)
+        time.sleep(interval)
+
+    def _interrupted(self) -> None:
+        """Raise :class:`_PauseExit` if the user interrupted or focus was lost."""
+        key = try_get_key()
+        if key is not None and key in (K.ESC, K.BS, K.ENTER):
+            raise _PauseExit()
+        if not self._guard.check():
+            raise _PauseExit()
+
+    def _set(self, node_id: str | None, status: str) -> None:
+        """Update runtime status on a node by id."""
+        if not node_id:
+            return
+        node = self._node_map.get(node_id)
+        if node is not None:
+            node.runtime_status = status
+
+    def _dim_branch(self, b: Branch) -> None:
+        """Dim a branch and its entire subtree."""
+        if b.node_id:
+            self._set(b.node_id, _ST_DIM)
+        for nid in self._subtree_node_ids(b.steps):
+            self._set(nid, _ST_DIM)
+
+    def _dim_other_branches(self, match_step: StepConfig, taken: Branch) -> None:
+        """Dim every branch of *match_step* except *taken*."""
+        for b in (match_step.branches or []):
+            if b is not taken:
+                self._dim_branch(b)
+
+    def _dim_all_branches(self, match_step: StepConfig) -> None:
+        """Dim every branch of *match_step* (fallback / no match)."""
+        for b in (match_step.branches or []):
+            self._dim_branch(b)
+
+    def _render(self) -> None:
+        """Re-render the current frame (running or paused)."""
+        self.render_idle(run_state=self._run_state)
+
+    def _countdown(self, step: StepConfig, delay: float) -> None:
+        """Count down *delay* seconds, rendering remaining ms every 50 ms.
+
+        Checks for user interrupt (Esc/Backspace/Enter) and focus loss
+        between frames — either raises :class:`_PauseExit`.
+
+        When *delay* <= 0, enters **pause mode**: the run state is set
+        to idle, runtime statuses are cleared, the cursor is placed on
+        this step, and the executor blocks until the user presses Enter
+        (resume) or Esc/Backspace (terminate).  During the pause the
+        user may navigate the step list and adjust delays.
+        """
+        if delay <= 0:
+            # 0 ms = pause
+            self._run_state = "idle"
+            self._reset_runtime_status(self._steps_cache)
+            self.right_view = "steps"
+            self.col_focus = "right"
+            self.right_editing = True  # pause = direct edit mode
+            self._sync_right_nav()
+            # Position the cursor on this step.
+            nav_idx: int = 0
+            for i, (s, _t) in enumerate(self._iter_nav_steps(self._steps_cache)):
+                if s is step:
+                    nav_idx = i
+                    break
+            self.right_nav.index = nav_idx
+            self._render()
+            while True:
+                key = get_key()
+                if key in (K.ESC, K.BS):
+                    raise _PauseExit()
+                if key == K.ENTER:
+                    break
+                if key in (K.UP, K.DOWN):
+                    self.right_nav.handle(key)
+                elif key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
+                    delta = (
+                        1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 10
+                    )
+                    sign = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
+                    self._adjust_step_delay(self.right_nav.index, sign * delta)
+                self._render()
+            self._run_state = "running"
+            self.right_editing = False
+            return
+
+        total_ms: int = int(delay * 1000)
+        step_ms: int = 50
+        start: float = time.monotonic()
+        deadline: float = start + delay
+        while True:
+            elapsed: float = time.monotonic() - start
+            remaining: int = max(0, total_ms - int(elapsed * 1000))
+            if remaining <= 0:
+                break
+            step.runtime_remaining_ms = remaining
+            self._render()
+            to_deadline: float = deadline - time.monotonic()
+            if to_deadline <= 0:
+                break
+            time.sleep(min(step_ms / 1000.0, to_deadline))
+            key = try_get_key()
+            if key is not None and key in (K.ESC, K.BS, K.ENTER):
+                raise _PauseExit()
+            if not self._guard.check():
+                raise _PauseExit()
+        step.runtime_remaining_ms = None
+
+    # ── Start-node (run-from-row) helpers ─────────────────
+
+    def _start_in_subtree(self, step: StepConfig) -> bool:
+        """Return True if the start node is inside *step*'s subtree."""
+        if not self._start_node:
+            return False
+        for nid in self._subtree_node_ids(
+            (step.children or []) + [
+                s for b in (step.branches or []) for s in b.steps
+            ]
+        ):
+            if nid == self._start_node:
+                return True
+        # Also check branch node_ids themselves.
+        for b in (step.branches or []):
+            if b.node_id == self._start_node:
+                return True
+        return False
+
+    def _start_in_branch(self, b: Branch) -> bool:
+        """Return True if the start node is inside branch *b*."""
+        if not self._start_node:
+            return False
+        if b.node_id == self._start_node:
+            return True
+        return self._start_node in self._subtree_node_ids(b.steps)
 
 
 # ── Module-level utilities ────────────────────────────────

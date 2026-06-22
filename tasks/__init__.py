@@ -24,7 +24,9 @@ def discover_tasks() -> list[dict]:
         }
 
     Returns:
-        A list of ``task_info`` dicts, sorted by directory name.
+        A list of ``task_info`` dicts.  ``拍卖场抢车`` is always pinned
+        first; the rest follow by directory name, so newly added tasks
+        default to appearing below the pinned one.
     """
     tasks: list[dict] = []
     task_dir = Path(__file__).parent
@@ -39,4 +41,9 @@ def discover_tasks() -> list[dict]:
             except Exception:
                 continue
 
-    return tasks
+    # Pin 拍卖场抢车 first; keep the rest in alphabetical (directory-name)
+    # order so new tasks default to appearing below it.
+    _PIN_TAG = "auction"
+    pinned: list[dict] = [t for t in tasks if t.get("tag") == _PIN_TAG]
+    rest: list[dict] = [t for t in tasks if t.get("tag") != _PIN_TAG]
+    return pinned + rest
