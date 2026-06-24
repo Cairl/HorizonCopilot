@@ -41,9 +41,15 @@ def discover_tasks() -> list[dict]:
             except Exception:
                 continue
 
-    # Pin 拍卖场抢车 first; keep the rest in alphabetical (directory-name)
-    # order so new tasks default to appearing below it.
-    _PIN_TAG = "auction"
-    pinned: list[dict] = [t for t in tasks if t.get("tag") == _PIN_TAG]
-    rest: list[dict] = [t for t in tasks if t.get("tag") != _PIN_TAG]
+    # Pin 拍卖场抢车 first, then 购买斯巴鲁抽奖; keep the rest in
+    # alphabetical (directory-name) order.
+    _PIN_ORDER = ["auction", "subaru"]
+    pinned: list[dict] = []
+    for tag in _PIN_ORDER:
+        for t in tasks:
+            if t.get("tag") == tag:
+                pinned.append(t)
+    rest: list[dict] = [
+        t for t in tasks if t.get("tag") not in _PIN_ORDER
+    ]
     return pinned + rest
