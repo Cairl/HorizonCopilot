@@ -278,6 +278,8 @@ class BaseTask(ABC):
         self._node_map: dict[str, StepConfig | Branch] = {}
         self._skip_active: bool = False
         self._steps_cache: list[StepConfig] = []
+        # Last-executed navigable index (set during _execute_tree).
+        self._last_nav_idx: int = 0
 
     # ── Main loop — template method ───────────────────────
 
@@ -306,6 +308,10 @@ class BaseTask(ABC):
                     self.store.load()
                     self.store.load_all_templates()
                 self._sync_right_nav()
+                # Place cursor on the last-executed step.
+                n_nav: int = self._count_nav_steps(self._steps_cache)
+                if n_nav > 0 and self._last_nav_idx < n_nav:
+                    self.right_nav.index = self._last_nav_idx
                 self._start_node = None
                 self.right_editing = False
                 # Keep _missing_msg so the first idle render shows it;
@@ -1407,6 +1413,13 @@ class BaseTask(ABC):
         self._node_map = {}
         self._build_node_map(steps, self._node_map)
 
+        # Build node_id → flat nav_idx mapping for post-run cursor.
+        self._nav_idx_map: dict[str, int] = {}
+        for i, (s, _nav_type) in enumerate(self._iter_nav_steps(steps)):
+            if s.node_id:
+                self._nav_idx_map[s.node_id] = i
+        self._last_nav_idx = 0
+
         guard: FocusGuard = self._make_guard()
         self._guard = guard
 
@@ -1445,6 +1458,10 @@ class BaseTask(ABC):
     def _walk(self, steps: list[StepConfig]) -> str:
         """Walk a step list; return ``"continue"`` | ``"end"`` | ``"stop"``."""
         for step in steps:
+            # Track last navigable nav_idx for post-run cursor.
+            nav_idx = self._nav_idx_map.get(step.node_id)
+            if nav_idx is not None:
+                self._last_nav_idx = nav_idx
             if self._skip_active:
                 if step.node_id == self._start_node:
                     self._skip_active = False
@@ -1629,7 +1646,7 @@ class BaseTask(ABC):
                         if self.store else (None, 0.0, 0, 0)
                     )
                     if conf >= fallback:
-                        self._win32_click_at(cx, cy)
+                        self._win32_click_at(cx, cy, hover_delay=step.delay)
                         taken = b
                         break
                 elif self.store.match_slot(ftype)[1] >= fallback:
@@ -1790,13 +1807,19 @@ class BaseTask(ABC):
 
     # ── Mouse / slot helpers ──────────────────────────────
 
-    def _win32_click_at(self, cx: int, cy: int) -> None:
-        """Move cursor to (cx, cy), left-click, then restore position."""
+    def _win32_click_at(self, cx: int, cy: int, hover_delay: float = 0.02) -> None:
+        """Move cursor to (cx, cy), wait *hover_delay* s, click, then restore.
+
+        *hover_delay* is the time the cursor hovers over the target
+        before clicking — callers should pass ``step.delay`` (the
+        step's configured interval, e.g. 0.5 for 500 ms) so that the
+        hover matches the cadence shown in the execution graph."
+        """
         pt = ctypes.wintypes.POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
         try:
             ctypes.windll.user32.SetCursorPos(cx, cy)
-            time.sleep(0.02)
+            time.sleep(hover_delay)
             ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
             time.sleep(0.01)
             ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
@@ -1844,14 +1867,14 @@ class BaseTask(ABC):
             slot, conf, cx, cy = self.store.locate_template_fullscreen(ftype or "")
             if slot is not None and conf >= fallback:
                 if step.button == "none":
-                    # Hover-only: move cursor and restore it.
+                    # Hover-only: move cursor, wait, then restore.
                     pt = ctypes.wintypes.POINT()
                     ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
                     ctypes.windll.user32.SetCursorPos(cx, cy)
-                    time.sleep(0.02)
+                    time.sleep(step.delay)
                     ctypes.windll.user32.SetCursorPos(pt.x, pt.y)
                 else:
-                    self._win32_click_at(cx, cy)
+                    self._win32_click_at(cx, cy, hover_delay=step.delay)
                 self._set(step.node_id, _ST_DONE)
                 return "continue"
 
