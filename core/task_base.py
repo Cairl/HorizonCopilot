@@ -1646,7 +1646,11 @@ class BaseTask(ABC):
                         if self.store else (None, 0.0, 0, 0)
                     )
                     if conf >= fallback:
-                        self._win32_click_at(cx, cy, hover_delay=step.delay)
+                        self._win32_click_at(
+                            cx, cy,
+                            button=step.button,
+                            click_delay=step.delay,
+                        )
                         taken = b
                         break
                 elif self.store.match_slot(ftype)[1] >= fallback:
@@ -1807,22 +1811,40 @@ class BaseTask(ABC):
 
     # ── Mouse / slot helpers ──────────────────────────────
 
-    def _win32_click_at(self, cx: int, cy: int, hover_delay: float = 0.02) -> None:
-        """Move cursor to (cx, cy), wait *hover_delay* s, click, then restore.
+    def _win32_click_at(
+        self, cx: int, cy: int,
+        button: str = "left",
+        click_delay: float = 0.1,
+    ) -> None:
+        """Move cursor to (cx, cy), press *button*, wait *click_delay* s,
+        release, then restore cursor.
 
-        *hover_delay* is the time the cursor hovers over the target
-        before clicking — callers should pass ``step.delay`` (the
-        step's configured interval, e.g. 0.5 for 500 ms) so that the
-        hover matches the cadence shown in the execution graph."
+        The *click_delay* is the time between mouse-down and mouse-up —
+        callers should pass ``step.delay`` (the step's configured
+        interval, e.g. 0.5 for 500 ms) so that the click press duration
+        matches the cadence shown in the execution graph."
         """
+        _DOWN: dict[str, int] = {
+            "left": 0x0002,
+            "right": 0x0008,
+            "middle": 0x0020,
+        }
+        _UP: dict[str, int] = {
+            "left": 0x0004,
+            "right": 0x0010,
+            "middle": 0x0040,
+        }
+        down_flag = _DOWN.get(button, 0x0002)
+        up_flag = _UP.get(button, 0x0004)
+
         pt = ctypes.wintypes.POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
         try:
             ctypes.windll.user32.SetCursorPos(cx, cy)
-            time.sleep(hover_delay)
-            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
-            time.sleep(0.01)
-            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+            time.sleep(0.10)                # brief hover so the game registers cursor
+            ctypes.windll.user32.mouse_event(down_flag, 0, 0, 0, 0)
+            time.sleep(click_delay)         # hold for the configured interval
+            ctypes.windll.user32.mouse_event(up_flag, 0, 0, 0, 0)
         finally:
             ctypes.windll.user32.SetCursorPos(pt.x, pt.y)
 
@@ -1874,7 +1896,11 @@ class BaseTask(ABC):
                     time.sleep(step.delay)
                     ctypes.windll.user32.SetCursorPos(pt.x, pt.y)
                 else:
-                    self._win32_click_at(cx, cy, hover_delay=step.delay)
+                    self._win32_click_at(
+                        cx, cy,
+                        button=step.button,
+                        click_delay=step.delay,
+                    )
                 self._set(step.node_id, _ST_DONE)
                 return "continue"
 
