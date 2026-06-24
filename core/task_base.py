@@ -178,6 +178,16 @@ def _fmt_ms(n: int) -> str:
     return f"{n:,}"
 
 
+def _fmt_hms(seconds: float) -> str:
+    """Format seconds as ``HH:MM:SS`` (rounded to nearest whole second)."""
+    total: int = int(round(seconds))
+    if total < 0:
+        total = 0
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
 # ── Tree rendering constants ──────────────────────────────
 
 _ST_DONE = "done"
@@ -280,6 +290,13 @@ class BaseTask(ABC):
         self._steps_cache: list[StepConfig] = []
         # Last-executed navigable index (set during _execute_tree).
         self._last_nav_idx: int = 0
+        # 置信度调节：进入调节时备份原值，取消时恢复。
+        self._thr_backup: float | None = None
+        # 循环次数：0 = 无限循环；运行时追踪当前轮次与单轮计时。
+        self._loop_count: int = 0
+        self._loop_count_focused: bool = False
+        self._current_loop: int = 0
+        self._loop_start_time: float | None = None
 
     # ── Main loop — template method ───────────────────────
 
@@ -331,6 +348,14 @@ class BaseTask(ABC):
         self._start_node = None
         self._missing_msg = ""
         self._viewport_start = 0
+        self._loop_count_focused = False
+        self._current_loop = 0
+        self._loop_start_time = None
+        self._thr_backup = None
+        if self.store is not None:
+            self._loop_count = int(self.store.settings.get("loop_count", 0))
+        else:
+            self._loop_count = 0
         self._sync_right_nav()
 
     def _sync_right_nav(self) -> None:
@@ -409,7 +434,7 @@ class BaseTask(ABC):
 
         if view == "steps":
             right_rows, right_w = self._build_steps_panel(steps, running)
-            right_title = "执行图"
+            right_title = self._steps_title(running)
         else:
             right_rows, right_w = self._build_features_panel(running)
             right_title = "特征库"
@@ -522,7 +547,7 @@ class BaseTask(ABC):
             for line in wrapped:
                 rows.append((
                     W.inner_line(
-                        f"{C.GRAY}{C.DIM}{line}{C.RESET}", _LEFT_W,
+                        f"{C.SUBTEXT}{line}{C.RESET}", _LEFT_W,
                     ),
                     False,
                 ))
@@ -533,12 +558,15 @@ class BaseTask(ABC):
         self, steps: list[StepConfig], running: bool,
     ) -> tuple[list[tuple[str, bool]], int]:
         """Build the execution-graph right-column rows + inner width."""
-        samples: list[str] = []
+        samples: list[str] = ["循环次数: 999/无限"]
         self._collect_width_samples(steps, "", samples, running=running)
         max_w: int = max([display_width(s) for s in samples] + [20])
         right_w: int = max_w + 4  # pointer(2) + padding(2)
 
         rows: list[tuple[str, bool]] = []
+        # ── 顶部循环次数配置行 ──
+        rows.append(self._build_loop_count_row(right_w, running))
+
         if not steps:
             rows.append((
                 W.inner_line(f"{C.GRAY}  无步骤定义{C.RESET}", right_w), False,
@@ -552,6 +580,60 @@ class BaseTask(ABC):
                 step, "", is_last, rows, right_w, nav_idx, running,
             )
         return rows, right_w
+
+    def _build_loop_count_row(
+        self, right_w: int, running: bool,
+    ) -> tuple[str, bool]:
+        """Build the top loop-count configuration row.
+
+        Idle: ``循环次数: N`` (N=0 shows ``无限``); selectable via
+        ``_loop_count_focused`` so ``←→`` adjusts and ``Enter`` runs
+        from the top.  Running: ``循环次数: M/N`` (N=0 shows ``无限``).
+        """
+        n: int = self._loop_count
+        if running:
+            cur: int = self._current_loop
+            n_disp: str = "无限" if n == 0 else str(n)
+            content = f"{C.LABEL}循环次数: {C.RESET}{cur}/{n_disp}"
+            return (W.inner_line(content, right_w), False)
+        n_disp = "无限" if n == 0 else str(n)
+        focused: bool = self._loop_count_focused and self.col_focus == "right"
+        if focused:
+            content = f"循环次数: {C.BOLD}{C.YELLOW}{n_disp}{C.RESET}"
+            return (W.inner_sel(content, right_w), True)
+        content = f"{C.LABEL}循环次数: {C.RESET}{n_disp}"
+        return (W.inner_line(content, right_w), False)
+
+    def _save_loop_count(self) -> None:
+        """持久化循环次数到 config.json 的 settings。"""
+        if self.store is None:
+            return
+        self.store._settings["loop_count"] = self._loop_count
+        self.store.save()
+
+    def _estimate_loop_duration(self) -> float:
+        """估算单轮循环总耗时（所有可导航步骤 delay 之和，秒）。
+
+        对 ``match`` / ``click_match`` 步骤，``delay`` 是检测间隔的
+        下界（单次倒计时），重试次数无法预测，故只取单次。
+        """
+        total: float = 0.0
+        for s, _ in self._iter_nav_steps(self.get_steps()):
+            total += s.delay
+        return total
+
+    def _steps_title(self, running: bool) -> str:
+        """执行图标题，附淡色的预计/实际用时（HH:MM:SS）。"""
+        pred: float = self._estimate_loop_duration()
+        pred_hms: str = _fmt_hms(pred)
+        if running and self._loop_start_time is not None:
+            real: float = time.monotonic() - self._loop_start_time
+            real_hms: str = _fmt_hms(real)
+            return (
+                f"执行图 {C.LABEL}预计 {pred_hms} "
+                f"实际 {real_hms}{C.RESET}"
+            )
+        return f"执行图 {C.LABEL}预计 {pred_hms}{C.RESET}"
 
     def _build_features_panel(
         self, running: bool,
@@ -585,7 +667,7 @@ class BaseTask(ABC):
             label = store.SLOT_LABELS.get(
                 slot.feature_type, slot.feature_type,
             )
-            samples.append(f"{label} [截取] [删除]")
+            samples.append(f"{label} [截取] [删除] [置信度:0.85]")
         for cat in CATEGORY_ORDER:
             if grouped[cat]:
                 samples.append(f"-- {CATEGORY_LABELS.get(cat, cat)} --")
@@ -611,15 +693,29 @@ class BaseTask(ABC):
                 cap_g = f" {cap_color}截取{C.RESET} "
                 dlt_b = f"[{C.BOLD}{C.RED}删除{C.RESET}]"
                 dlt_g = f" {C.RED}删除{C.RESET} "
+                thr_str: str = f"{slot.threshold:.2f}"
+                conf_g: str = f" {C.BLUE}置信度:{thr_str}{C.RESET} "
+                conf_b: str = f"[{C.BOLD}{C.BLUE}置信度:{thr_str}{C.RESET}]"
                 is_cursor: bool = (not running) and self.col_focus == "right" \
                     and self.right_nav.index == nav_idx
+                is_editing: bool = is_cursor and self._slot_action == 2 \
+                    and self.right_editing
+                if is_editing:
+                    conf_cur: str = (
+                        f"[{C.BOLD}{C.UNDERLINE}{C.YELLOW}"
+                        f"置信度:{thr_str}{C.RESET}]"
+                    )
+                elif is_cursor and self._slot_action == 2:
+                    conf_cur = conf_b
+                else:
+                    conf_cur = conf_g
                 if is_cursor:
                     cap = cap_b if self._slot_action == 0 else cap_g
                     dlt = dlt_b if self._slot_action == 1 else dlt_g
-                    content: str = f"{label} {cap}{dlt}"
+                    content: str = f"{label} {cap}{dlt}{conf_cur}"
                     rows.append((W.inner_sel(content, right_w), True))
                 else:
-                    content = f"{label} {cap_g}{dlt_g}"
+                    content = f"{label} {cap_g}{dlt_g}{conf_g}"
                     rows.append((W.inner_line(content, right_w), False))
                 nav_idx += 1
         return rows, right_w
@@ -647,9 +743,14 @@ class BaseTask(ABC):
             self._missing_msg = ""
 
         # Esc / Backspace:
+        # - 置信度调节中 → 取消编辑（不回左栏）
         # - Right panel → back to left menu
         # - Left menu → exit task
         if key in (K.ESC, K.BS):
+            if self.right_editing and self.col_focus == "right":
+                self._cancel_slot_threshold()
+                self.right_editing = False
+                return True
             if self.col_focus == "right":
                 self.col_focus = "left"
                 return True
@@ -679,17 +780,22 @@ class BaseTask(ABC):
                     from core.focus import activate_game_window
                     if activate_game_window():
                         self._start_node = None
+                        self._loop_count_focused = False
                         self.state = "running"
             elif self.left_nav.index == 1:
                 # 执行图 → open in right panel and move focus there
                 self.right_view = "steps"
                 self._viewport_start = 0
+                self._loop_count_focused = False
                 self._sync_right_nav()
                 self.col_focus = "right"
             elif self.left_nav.index == 2:
                 # 特征库 → open in right panel and move focus there
                 self.right_view = "features"
                 self._viewport_start = 0
+                self._loop_count_focused = False
+                self.right_editing = False
+                self._thr_backup = None
                 self._sync_right_nav()
                 self.col_focus = "right"
             return True
@@ -714,7 +820,36 @@ class BaseTask(ABC):
         steps: list[StepConfig] = self.get_steps()
 
         if self.right_view == "steps":
-            # ── Steps: direct navigation + adjustment ──
+            # ── 循环次数行焦点 ──
+            if self._loop_count_focused:
+                if key == K.DOWN:
+                    self._loop_count_focused = False
+                    self.right_nav.index = 0
+                    return True
+                if key == K.UP:
+                    return True  # 已在顶部
+                if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
+                    step_v: int = 10 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 1
+                    sign_v: int = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
+                    self._loop_count = max(0, self._loop_count + sign_v * step_v)
+                    self._save_loop_count()
+                    return True
+                if key == K.ENTER:
+                    # 从头运行
+                    if self._can_start():
+                        from core.focus import activate_game_window
+                        if activate_game_window():
+                            self._start_node = None
+                            self._loop_count_focused = False
+                            self.state = "running"
+                    return True
+                return True
+
+            # ── 步骤行焦点 ──
+            if key == K.UP and self.right_nav.index == 0:
+                # 首步骤按 Up → 焦点到循环次数行
+                self._loop_count_focused = True
+                return True
             if key in (K.UP, K.DOWN):
                 self.right_nav.handle(key)
                 return True
@@ -739,20 +874,54 @@ class BaseTask(ABC):
             return True
 
         # ── Features view ──
+        if self.right_editing:
+            # 置信度调节中
+            if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
+                step_v: float = (
+                    0.05 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 0.01
+                )
+                sign_v: float = -1.0 if key in (K.LEFT, K.SHIFT_LEFT) else 1.0
+                self._adjust_slot_threshold(
+                    self.right_nav.index, sign_v * step_v,
+                )
+                return True
+            if key == K.ENTER:
+                # 保存并退出调节
+                self._save_slot_threshold(self.right_nav.index)
+                self.right_editing = False
+                return True
+            if key in (K.UP, K.DOWN):
+                # 调节中导航 → 保存当前槽位并切换
+                self._save_slot_threshold(self.right_nav.index)
+                self.right_editing = False
+                old = self.right_nav.index
+                self.right_nav.handle(key)
+                if old != self.right_nav.index:
+                    self._slot_action = 0
+                return True
+            return True
+
+        # 非调节态
         if key in (K.UP, K.DOWN):
             old = self.right_nav.index
             self.right_nav.handle(key)
             if old != self.right_nav.index:
                 self._slot_action = 0
             return True
-        if key in (K.LEFT, K.RIGHT):
-            self._slot_action = 1 if self._slot_action == 0 else 0
+        if key == K.LEFT:
+            self._slot_action = (self._slot_action - 1) % 3
+            return True
+        if key == K.RIGHT:
+            self._slot_action = (self._slot_action + 1) % 3
             return True
         if key == K.ENTER:
             if self._slot_action == 0:
                 self._capture_feature()
-            else:
+            elif self._slot_action == 1:
                 self._delete_feature()
+            else:
+                # 进入置信度调节
+                self._begin_slot_threshold(self.right_nav.index)
             return True
         return True
 
@@ -845,6 +1014,47 @@ class BaseTask(ABC):
         self.store.load_all_templates()
         self._sync_right_nav()
         self.renderer.reset()
+
+    # ── Slot threshold adjustment ────────────────────────
+
+    def _begin_slot_threshold(self, nav_idx: int) -> None:
+        """进入指定槽位的置信度调节模式（备份原值）。"""
+        if self.store is None:
+            return
+        slots_list = list(self.store.iter_by_category())
+        if nav_idx < 0 or nav_idx >= len(slots_list):
+            return
+        slot = slots_list[nav_idx]
+        self._thr_backup = slot.threshold
+        self.right_editing = True
+
+    def _adjust_slot_threshold(self, nav_idx: int, delta: float) -> None:
+        """调节指定槽位的置信度阈值（仅内存，未持久化）。"""
+        if self.store is None:
+            return
+        slots_list = list(self.store.iter_by_category())
+        if nav_idx < 0 or nav_idx >= len(slots_list):
+            return
+        slot = slots_list[nav_idx]
+        new_val: float = max(0.0, min(1.0, round(slot.threshold + delta, 2)))
+        slot.threshold = new_val
+
+    def _save_slot_threshold(self, nav_idx: int) -> None:
+        """持久化当前槽位的置信度阈值到 config.json。"""
+        if self.store is None:
+            return
+        self.store.save()
+        self._thr_backup = None
+
+    def _cancel_slot_threshold(self) -> None:
+        """取消置信度调节，恢复备份的原值。"""
+        if self.store is None or self._thr_backup is None:
+            return
+        slots_list = list(self.store.iter_by_category())
+        nav_idx: int = self.right_nav.index
+        if 0 <= nav_idx < len(slots_list):
+            slots_list[nav_idx].threshold = self._thr_backup
+        self._thr_backup = None
 
     # ── Tree helpers (execution graph) ────────────────────
 
@@ -987,6 +1197,7 @@ class BaseTask(ABC):
             is_sel: bool = (
                 (not running) and self.col_focus == "right"
                 and self.right_nav.index == nav_idx
+                and not self._loop_count_focused
             ) or (running and status == _ST_CUR)
             if running:
                 display_ms = (
@@ -1379,6 +1590,18 @@ class BaseTask(ABC):
         rev = {v: k for k, v in self.store.SLOT_LABELS.items()}
         return rev.get(branch.condition)
 
+    def _slot_threshold(self, feature_type: str | None) -> float:
+        """返回指定特征的置信度阈值。
+
+        取槽位自身保存的 ``threshold``（可在特征库里逐个调节），
+        缺省 0.85。运行时只有匹配置信度 ≥ 该阈值才算命中并执行
+        对应动作（分支执行 / 点击）。
+        """
+        if not feature_type or self.store is None:
+            return 0.85
+        slot = self.store.get_slot(feature_type)
+        return slot.threshold if slot is not None else 0.85
+
     def _execute_tree(self, start_node_id: str | None = None) -> None:
         """Generic tree-walking executor — drives the whole run.
 
@@ -1434,15 +1657,20 @@ class BaseTask(ABC):
             return
 
         self._skip_active = start_node_id is not None
+        self._loop_count_focused = False
+        loop_target: int = self._loop_count
+        self._current_loop = 0
 
         try:
-            while True:
+            while loop_target == 0 or self._current_loop < loop_target:
                 key = try_get_key()
                 if key is not None and key in (K.ESC, K.BS, K.ENTER):
                     return
                 if not guard.check():
                     return
 
+                self._current_loop += 1
+                self._loop_start_time = time.monotonic()
                 self.stats["attempts"] += 1
                 self._reset_runtime_status(steps)
 
@@ -1552,30 +1780,27 @@ class BaseTask(ABC):
             time.sleep(0.5)
             return "stop"
 
-        fallback: float = self.store.settings.get(
-            "global_threshold_fallback", 0.85,
-        )
-
         if step.branches:
             if step.loop_until_match:
-                return self._looping_branched_match(step, fallback)
-            return self._oneshot_branched_match(step, fallback)
+                return self._looping_branched_match(step)
+            return self._oneshot_branched_match(step)
 
         # Branchless match: loop {countdown, screenshot} until detected.
         ftype = ftypes[0] if ftypes else None
+        thresh: float = self._slot_threshold(ftype)
         while True:
             self._set(step.node_id, _ST_CUR)
             self._render()
             self._countdown(step, step.delay)
             self._interrupted()
             conf: float = self.store.match_slot(ftype)[1] if ftype else 0.0
-            if conf >= fallback:
+            if conf >= thresh:
                 self._set(step.node_id, _ST_DONE)
                 break
         return "continue"
 
     def _oneshot_branched_match(
-        self, step: StepConfig, fallback: float,
+        self, step: StepConfig,
     ) -> str:
         """One-shot branched match — one countdown, one screenshot.
 
@@ -1591,7 +1816,7 @@ class BaseTask(ABC):
         taken: Branch | None = None
         for b in step.branches:
             ftype = self._branch_feature_type(b)
-            if ftype and self.store.match_slot(ftype)[1] >= fallback:
+            if ftype and self.store.match_slot(ftype)[1] >= self._slot_threshold(ftype):
                 taken = b
                 break
 
@@ -1610,7 +1835,7 @@ class BaseTask(ABC):
         return self._branch_loop_signal(taken)
 
     def _looping_branched_match(
-        self, step: StepConfig, fallback: float,
+        self, step: StepConfig,
     ) -> str:
         """Looping branched match — loop until a branch matches.
 
@@ -1639,13 +1864,14 @@ class BaseTask(ABC):
                 ftype = self._branch_feature_type(b)
                 if not ftype:
                     continue  # "else" branch — handled below
+                thresh: float = self._slot_threshold(ftype)
                 if self._is_locator_slot(ftype):
                     # 定位特征 → 全屏匹配 + 点击
                     _s, conf, cx, cy = (
                         self.store.locate_template_fullscreen(ftype)
                         if self.store else (None, 0.0, 0, 0)
                     )
-                    if conf >= fallback:
+                    if conf >= thresh:
                         self._win32_click_at(
                             cx, cy,
                             button=step.button,
@@ -1653,7 +1879,7 @@ class BaseTask(ABC):
                         )
                         taken = b
                         break
-                elif self.store.match_slot(ftype)[1] >= fallback:
+                elif self.store.match_slot(ftype)[1] >= thresh:
                     taken = b
                     break
 
@@ -1876,10 +2102,6 @@ class BaseTask(ABC):
             time.sleep(0.5)
             return "stop"
 
-        fallback: float = self.store.settings.get(
-            "global_threshold_fallback", 0.85,
-        )
-
         while True:
             self._set(step.node_id, _ST_CUR)
             self._render()
@@ -1887,7 +2109,7 @@ class BaseTask(ABC):
             self._interrupted()
 
             slot, conf, cx, cy = self.store.locate_template_fullscreen(ftype or "")
-            if slot is not None and conf >= fallback:
+            if slot is not None and conf >= slot.threshold:
                 if step.button == "none":
                     # Hover-only: move cursor, wait, then restore.
                     pt = ctypes.wintypes.POINT()

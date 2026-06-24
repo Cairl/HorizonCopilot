@@ -46,9 +46,9 @@ class FeatureType(Enum):
 
 
 SLOT_LABELS: dict[str, str] = {
-    "subaru_factory_lower": "斯巴鲁牌(小写)",
-    "subaru_factory_upper": "斯巴鲁牌(大写)",
-    "subaru_car": "斯巴鲁车",
+    "subaru_factory_lower": "小写厂牌",
+    "subaru_factory_upper": "大写厂牌",
+    "subaru_car": "车辆卡片",
 }
 
 _DEFAULT_STEPS: list[dict] = [
@@ -61,13 +61,13 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Backspace", "type": "keypress", "key": "backspace", "delay": 0.05},
     {
-        "name": "判断斯巴鲁牌小写",
+        "name": "判断小写厂牌",
         "type": "match",
         "feature_type": "subaru_factory_lower",
         "delay": 1.0,
         "loop_until_match": True,
         "branches": [
-          {"condition": "斯巴鲁牌(小写)", "steps": []},
+          {"condition": "小写厂牌", "steps": []},
           {"condition": "如果失败", "loop": "回到本步骤", "steps": [
             {"name": "上", "type": "keypress", "key": "up", "delay": 0.05}
           ]}
@@ -87,26 +87,26 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Backspace", "type": "keypress", "key": "backspace", "delay": 0.05},
     {
-        "name": "判断斯巴鲁牌大写",
+        "name": "判断大写厂牌",
         "type": "match",
         "feature_type": "subaru_factory_upper",
         "delay": 1.0,
         "loop_until_match": True,
         "branches": [
-          {"condition": "斯巴鲁牌(大写)", "steps": []},
+          {"condition": "大写厂牌", "steps": []},
           {"condition": "如果失败", "loop": "回到本步骤", "steps": [
             {"name": "上", "type": "keypress", "key": "up", "delay": 0.05}
           ]}
         ]
     },
     {
-        "name": "左键斯巴鲁车",
+        "name": "左键车辆卡片",
         "type": "match",
         "feature_type": "subaru_car",
         "delay": 0.5,
         "loop_until_match": True,
         "branches": [
-          {"condition": "斯巴鲁车", "steps": []},
+          {"condition": "车辆卡片", "steps": []},
           {"condition": "如果失败", "loop": "回到本步骤", "steps": [
             {"name": "右", "type": "keypress", "key": "right", "delay": 0.05}
           ]}
@@ -144,26 +144,26 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Backspace", "type": "keypress", "key": "backspace", "delay": 0.05},
     {
-        "name": "判断斯巴鲁牌大写",
+        "name": "判断大写厂牌",
         "type": "match",
         "feature_type": "subaru_factory_upper",
         "delay": 1.0,
         "loop_until_match": True,
         "branches": [
-          {"condition": "斯巴鲁牌(大写)", "steps": []},
+          {"condition": "大写厂牌", "steps": []},
           {"condition": "如果失败", "loop": "回到本步骤", "steps": [
             {"name": "上", "type": "keypress", "key": "up", "delay": 0.05}
           ]}
         ]
     },
     {
-        "name": "左键斯巴鲁车",
+        "name": "左键车辆卡片",
         "type": "match",
         "feature_type": "subaru_car",
         "delay": 0.5,
         "loop_until_match": True,
         "branches": [
-          {"condition": "斯巴鲁车", "steps": []},
+          {"condition": "车辆卡片", "steps": []},
           {"condition": "如果失败", "loop": "回到本步骤", "steps": [
             {"name": "右", "type": "keypress", "key": "right", "delay": 0.05}
           ]}
@@ -205,7 +205,7 @@ class SubaruTask(BaseTask):
     task_tag: str = "subaru"
     intro_text: str = (
         "购买/抽奖/卖车全自动四阶段循环。\n"
-        "需要截取斯巴鲁厂和斯巴鲁车两个特征。"
+        "需要截取厂牌和车辆卡片两个特征。"
     )
 
     # ── Setup ──────────────────────────────────────────────
@@ -275,11 +275,11 @@ class SubaruTask(BaseTask):
             _KP("Enter", "enter"),                               #  5
             _KP("Backspace", "backspace"),                       #  6
             StepConfig(
-                "判断斯巴鲁牌小写", type="match",
+                "判断小写厂牌", type="match",
                 feature_type="subaru_factory_lower",
                 delay=1.0, loop_until_match=True,
                 branches=[
-                    Branch("斯巴鲁牌(小写)", []),
+                    Branch("小写厂牌", []),
                     Branch("如果失败", [
                         _KP("上", "up"),
                     ], loop="回到本步骤"),
@@ -298,24 +298,24 @@ class SubaruTask(BaseTask):
             _KP("PageDown", "pagedown"),                        # 18
             _KP("Enter", "enter"),                              # 19
             _KP("Backspace", "backspace"),                      # 20
-            # 全屏匹配斯巴鲁牌(大写)，找到点击，如果失败按 UP 重试
+            # 全屏匹配大写厂牌，找到点击，如果失败按 UP 重试
             StepConfig(
-                "判断斯巴鲁牌大写", type="match",
+                "判断大写厂牌", type="match",
                 feature_type="subaru_factory_upper",
                 delay=1.0, loop_until_match=True,
                 branches=[
-                    Branch("斯巴鲁牌(大写)", []),
+                    Branch("大写厂牌", []),
                     Branch("如果失败", [
                         _KP("上", "up"),
                     ], loop="回到本步骤"),
                 ],
             ),                                                  # 22
             StepConfig(
-                "左键斯巴鲁车", type="match",
+                "左键车辆卡片", type="match",
                 feature_type="subaru_car",
                 delay=0.5, loop_until_match=True,
                 branches=[
-                    Branch("斯巴鲁车", []),
+                    Branch("车辆卡片", []),
                     Branch("如果失败", [
                         _KP("右", "right"),
                     ], loop="回到本步骤"),
@@ -353,22 +353,22 @@ class SubaruTask(BaseTask):
             _KP("Enter", "enter"),                              # 51
             _KP("Backspace", "backspace"),                      # 52
             StepConfig(
-                "判断斯巴鲁牌大写", type="match",
+                "判断大写厂牌", type="match",
                 feature_type="subaru_factory_upper",
                 delay=1.0, loop_until_match=True,
                 branches=[
-                    Branch("斯巴鲁牌(大写)", []),
+                    Branch("大写厂牌", []),
                     Branch("如果失败", [
                         _KP("上", "up"),
                     ], loop="回到本步骤"),
                 ],
             ),                                                  # 54
             StepConfig(
-                "左键斯巴鲁车", type="match",
+                "左键车辆卡片", type="match",
                 feature_type="subaru_car",
                 delay=0.5, loop_until_match=True,
                 branches=[
-                    Branch("斯巴鲁车", []),
+                    Branch("车辆卡片", []),
                     Branch("如果失败", [
                         _KP("右", "right"),
                     ], loop="回到本步骤"),

@@ -9,7 +9,7 @@
         62
       ],
       "template_file": "subaru_factory_lower.png",
-      "threshold": 0.85
+      "threshold": 0.95
     },
     "subaru_factory_upper": {
       "region": [
@@ -19,7 +19,7 @@
         64
       ],
       "template_file": "subaru_factory_upper.png",
-      "threshold": 0.85
+      "threshold": 0.95
     },
     "subaru_car": {
       "region": [
@@ -29,7 +29,7 @@
         311
       ],
       "template_file": "subaru_car.png",
-      "threshold": 0.85
+      "threshold": 0.95
     }
   },
   "steps": [
@@ -125,7 +125,7 @@
       "loop_until_match": false
     },
     {
-      "name": "判断斯巴鲁牌小写",
+      "name": "判断小写厂牌",
       "type": "match",
       "key": null,
       "delay": 0.1,
@@ -138,7 +138,7 @@
       "loop_until_match": true,
       "branches": [
         {
-          "condition": "斯巴鲁牌(小写)",
+          "condition": "小写厂牌",
           "loop": null,
           "node_id": null,
           "steps": []
@@ -322,7 +322,7 @@
       "loop_until_match": false
     },
     {
-      "name": "判断斯巴鲁牌大写",
+      "name": "判断大写厂牌",
       "type": "match",
       "key": null,
       "delay": 0.1,
@@ -335,7 +335,7 @@
       "loop_until_match": true,
       "branches": [
         {
-          "condition": "斯巴鲁牌(大写)",
+          "condition": "大写厂牌",
           "loop": null,
           "node_id": null,
           "steps": []
@@ -363,10 +363,10 @@
       ]
     },
     {
-      "name": "左键斯巴鲁车",
+      "name": "左键车辆卡片",
       "type": "match",
       "key": null,
-      "delay": 0.1,
+      "delay": 0.5,
       "feature_type": "subaru_car",
       "button": "left",
       "clicks": 1,
@@ -376,7 +376,7 @@
       "loop_until_match": true,
       "branches": [
         {
-          "condition": "斯巴鲁车",
+          "condition": "车辆卡片",
           "loop": null,
           "node_id": null,
           "steps": []
@@ -771,7 +771,7 @@
       "name": "Backspace",
       "type": "keypress",
       "key": "backspace",
-      "delay": 0.5,
+      "delay": 1.0,
       "feature_type": null,
       "button": "left",
       "clicks": 1,
@@ -781,7 +781,7 @@
       "loop_until_match": false
     },
     {
-      "name": "判断斯巴鲁牌大写",
+      "name": "判断大写厂牌",
       "type": "match",
       "key": null,
       "delay": 0.1,
@@ -794,7 +794,7 @@
       "loop_until_match": true,
       "branches": [
         {
-          "condition": "斯巴鲁牌(大写)",
+          "condition": "大写厂牌",
           "loop": null,
           "node_id": null,
           "steps": []
@@ -822,10 +822,10 @@
       ]
     },
     {
-      "name": "左键斯巴鲁车",
+      "name": "左键车辆卡片",
       "type": "match",
       "key": null,
-      "delay": 0.1,
+      "delay": 0.5,
       "feature_type": "subaru_car",
       "button": "left",
       "clicks": 1,
@@ -835,7 +835,7 @@
       "loop_until_match": true,
       "branches": [
         {
-          "condition": "斯巴鲁车",
+          "condition": "车辆卡片",
           "loop": null,
           "node_id": null,
           "steps": []
@@ -994,6 +994,7 @@
     }
   ],
   "settings": {
-    "global_threshold_fallback": 0.85
+    "global_threshold_fallback": 0.85,
+    "loop_count": 14
   }
 }

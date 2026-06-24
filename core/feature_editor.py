@@ -76,7 +76,13 @@ def capture_slot_feature(
                    f"{C.LABEL}模板已保存到 {filename}{C.RESET}")
 
     # ── Step 3: save to store ────────────────────────────
-    threshold: float = store.settings.get("global_threshold_fallback", 0.85)
+    # 保留槽位已调节的置信度阈值；首次截取才用全局默认值。
+    existing = store.get_slot(feature_type)
+    threshold: float = (
+        existing.threshold
+        if existing is not None and existing.template_file
+        else store.settings.get("global_threshold_fallback", 0.85)
+    )
     store.set_slot(feature_type, region, filename, threshold)
     return True
 
