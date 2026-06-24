@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import string
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -233,6 +234,13 @@ class BaseTask(ABC):
     task_tag: str = ""
     intro_text: str = ""
 
+    # ── 循环次数公式（可选，子类覆写）──────────────────────
+    # 非空 template + 非 None default_terms 表示该任务有循环次数公式。
+    # 聚焦时显示 ``{N}={公式}``，公式中的数字可编辑（Tab 切换），
+    # 编辑公式数字后 N 按向下取整重新计算；直接编辑 N 则不受公式约束。
+    loop_formula_template: str = ""
+    loop_formula_default_terms: list[int] | None = None
+
     # ── Abstract methods ──────────────────────────────────
 
     @abstractmethod
@@ -297,6 +305,11 @@ class BaseTask(ABC):
         self._loop_count_focused: bool = False
         self._current_loop: int = 0
         self._loop_start_time: float | None = None
+        self._loop_infinite: bool = False
+        # 公式编辑：terms 为公式中的可编辑数字；active=0 表示编辑 N，
+        # active>=1 表示编辑 terms[active-1]，编辑后 N 按向下取整重算。
+        self._loop_terms: list[int] = []
+        self._loop_active: int = 0
 
     # ── Main loop — template method ───────────────────────
 
@@ -352,10 +365,12 @@ class BaseTask(ABC):
         self._current_loop = 0
         self._loop_start_time = None
         self._thr_backup = None
+        self._loop_active = 0
         if self.store is not None:
             self._loop_count = int(self.store.settings.get("loop_count", 0))
         else:
             self._loop_count = 0
+        self._load_loop_terms()
         self._sync_right_nav()
 
     def _sync_right_nav(self) -> None:
@@ -452,12 +467,22 @@ class BaseTask(ABC):
         term_h: int = shutil.get_terminal_size().lines
         # Outer frame: top border + blank + header + separator + bottom border = 5
         max_content: int = max(4, term_h - 5)
-        total: int = len(right_rows)
 
-        if total > max_content:
-            # Find the selected (highlighted) row index.
+        # 在执行图视图下，循环次数行作为固定表头始终置顶，
+        # 不参与视口滚动，方便随时查看。
+        fixed_header: list[tuple[str, bool]] = []
+        scroll_rows: list[tuple[str, bool]] = right_rows
+        if view == "steps" and right_rows:
+            fixed_header = [right_rows[0]]
+            scroll_rows = right_rows[1:]
+
+        avail: int = max(0, max_content - len(fixed_header))
+        total_scroll: int = len(scroll_rows)
+
+        if total_scroll > avail:
+            # Find the selected (highlighted) row index within scroll area.
             sel_idx: int = 0
-            for i, (_inner, is_sel) in enumerate(right_rows):
+            for i, (_inner, is_sel) in enumerate(scroll_rows):
                 if is_sel:
                     sel_idx = i
                     break
@@ -466,14 +491,18 @@ class BaseTask(ABC):
             vs: int = self._viewport_start
             if sel_idx < vs:
                 vs = sel_idx
-            elif sel_idx >= vs + max_content:
-                vs = sel_idx - max_content + 1
-            vs = max(0, min(vs, total - max_content))
+            elif sel_idx >= vs + avail:
+                vs = sel_idx - avail + 1
+            vs = max(0, min(vs, total_scroll - avail))
             self._viewport_start = vs
 
-            # Slice rows.
-            visible: list[tuple[str, bool]] = right_rows[vs:vs + max_content]
-            right_rows = visible
+            # Slice scroll rows; fixed header stays on top.
+            visible: list[tuple[str, bool]] = scroll_rows[vs:vs + avail]
+            right_rows = fixed_header + visible
+        else:
+            # 内容不溢出：固定表头 + 全部滚动行。
+            self._viewport_start = 0
+            right_rows = fixed_header + scroll_rows
 
         lines: list[str] = W.two_column_frame(
             self.task_name, "菜单", left_rows,
@@ -558,7 +587,13 @@ class BaseTask(ABC):
         self, steps: list[StepConfig], running: bool,
     ) -> tuple[list[tuple[str, bool]], int]:
         """Build the execution-graph right-column rows + inner width."""
-        samples: list[str] = ["循环次数: 999/无限"]
+        # 宽度采样：循环次数行（含公式）取实际显示宽度的代表值。
+        if self._has_loop_formula():
+            n_sample: str = "999" if self._loop_count else "无限"
+            sample_str: str = f"循环次数: {n_sample}={self._loop_formula_plain()}"
+        else:
+            sample_str = "循环次数: 999/无限"
+        samples: list[str] = [sample_str]
         self._collect_width_samples(steps, "", samples, running=running)
         max_w: int = max([display_width(s) for s in samples] + [20])
         right_w: int = max_w + 4  # pointer(2) + padding(2)
@@ -586,23 +621,134 @@ class BaseTask(ABC):
     ) -> tuple[str, bool]:
         """Build the top loop-count configuration row.
 
-        Idle: ``循环次数: N`` (N=0 shows ``无限``); selectable via
-        ``_loop_count_focused`` so ``←→`` adjusts and ``Enter`` runs
-        from the top.  Running: ``循环次数: M/N`` (N=0 shows ``无限``).
+        Idle (无公式): ``循环次数: N`` (N=0 shows ``无限``).
+        Idle (有公式): ``循环次数: {N}={公式}``，聚焦时高亮当前可编辑数字。
+        Running: ``循环次数: M/N`` (N=0 shows ``无限``).
         """
         n: int = self._loop_count
         if running:
-            cur: int = self._current_loop
-            n_disp: str = "无限" if n == 0 else str(n)
-            content = f"{C.LABEL}循环次数: {C.RESET}{cur}/{n_disp}"
+            # 运行态：显示剩余次数（每轮完成后实质减少）。
+            # 无限循环显示「无限」；有限循环显示当前剩余数字。
+            if self._loop_infinite:
+                content = f"{C.LABEL}循环次数: {C.RESET}无限"
+            else:
+                content = f"{C.LABEL}循环次数: {C.RESET}{n}"
             return (W.inner_line(content, right_w), False)
-        n_disp = "无限" if n == 0 else str(n)
+
+        has_formula: bool = self._has_loop_formula()
+        n_disp: str = "无限" if n == 0 else str(n)
         focused: bool = self._loop_count_focused and self.col_focus == "right"
+
+        if not has_formula:
+            if focused:
+                content = f"循环次数: {C.BOLD}{C.YELLOW}{n_disp}{C.RESET}"
+                return (W.inner_sel(content, right_w), True)
+            content = f"{C.LABEL}循环次数: {C.RESET}{n_disp}"
+            return (W.inner_line(content, right_w), False)
+
+        # ── 有公式 ──
         if focused:
-            content = f"循环次数: {C.BOLD}{C.YELLOW}{n_disp}{C.RESET}"
+            content = self._render_loop_count_editable()
             return (W.inner_sel(content, right_w), True)
+        # 未聚焦：只显示目标数字，不显示公式
         content = f"{C.LABEL}循环次数: {C.RESET}{n_disp}"
         return (W.inner_line(content, right_w), False)
+
+    # ── 循环次数公式辅助 ──────────────────────────────────
+
+    def _has_loop_formula(self) -> bool:
+        """该任务是否定义了循环次数公式。"""
+        return (
+            self.loop_formula_default_terms is not None
+            and bool(self.loop_formula_template)
+        )
+
+    def loop_formula_compute(self, terms: list[int]) -> int:
+        """根据公式各项计算循环次数（向下取整）。子类按公式结构覆写。
+
+        默认实现：第一项整除第二项（向下取整）。
+        """
+        if len(terms) >= 2 and terms[1] != 0:
+            return terms[0] // terms[1]
+        return 0
+
+    def _load_loop_terms(self) -> None:
+        """从配置加载公式各项；无配置则用类默认值。"""
+        defaults = self.loop_formula_default_terms
+        if defaults is None:
+            self._loop_terms = []
+            return
+        if self.store is not None:
+            saved = self.store.settings.get("loop_formula_terms")
+            if isinstance(saved, list) and len(saved) == len(defaults):
+                self._loop_terms = [int(x) for x in saved]
+                return
+        self._loop_terms = list(defaults)
+
+    def _save_loop_terms(self) -> None:
+        """持久化公式各项到 config.json。"""
+        if self.store is None or not self._has_loop_formula():
+            return
+        self.store._settings["loop_formula_terms"] = list(self._loop_terms)
+        self.store.save()
+
+    def _loop_formula_plain(self) -> str:
+        """返回公式的纯文本形式（如 ``357÷30``），无颜色码。"""
+        if not self._has_loop_formula():
+            return ""
+        fmt = string.Formatter()
+        parts: list[str] = []
+        for literal, field_name, _spec, _conv in fmt.parse(
+            self.loop_formula_template
+        ):
+            if literal:
+                parts.append(literal)
+            if field_name is not None:
+                idx: int = int(field_name)
+                if 0 <= idx < len(self._loop_terms):
+                    parts.append(str(self._loop_terms[idx]))
+        return "".join(parts)
+
+    def _render_loop_count_editable(self) -> str:
+        """聚焦态渲染：高亮当前可编辑数字（N 或某项公式数字）。
+
+        active=0 → 高亮 N；active>=1 → 高亮 terms[active-1]。
+        其余数字以常规色显示，符号不可编辑（不高亮）。
+        """
+        n: int = self._loop_count
+        n_disp: str = "无限" if n == 0 else str(n)
+        active: int = self._loop_active
+
+        # N 部分
+        if active == 0:
+            n_part: str = f"{C.UNDERLINE}{C.BOLD}{C.YELLOW}{n_disp}{C.RESET}"
+        else:
+            n_part = f"{C.WHITE}{n_disp}{C.RESET}"
+
+        if not self._has_loop_formula():
+            return f"循环次数: {n_part}"
+
+        # 公式部分：逐字段渲染，高亮 active 对应项
+        fmt = string.Formatter()
+        parts: list[str] = ["循环次数: ", n_part, "="]
+        for literal, field_name, _spec, _conv in fmt.parse(
+            self.loop_formula_template
+        ):
+            if literal:
+                parts.append(f"{C.LABEL}{literal}{C.RESET}")
+            if field_name is not None:
+                idx: int = int(field_name)
+                val: str = (
+                    str(self._loop_terms[idx])
+                    if 0 <= idx < len(self._loop_terms) else "?"
+                )
+                if active == idx + 1:
+                    parts.append(
+                        f"{C.UNDERLINE}{C.BOLD}{C.YELLOW}{val}{C.RESET}"
+                    )
+                else:
+                    parts.append(f"{C.WHITE}{val}{C.RESET}")
+        return "".join(parts)
 
     def _save_loop_count(self) -> None:
         """持久化循环次数到 config.json 的 settings。"""
@@ -630,10 +776,10 @@ class BaseTask(ABC):
             real: float = time.monotonic() - self._loop_start_time
             real_hms: str = _fmt_hms(real)
             return (
-                f"执行图 {C.LABEL}预计 {pred_hms} "
-                f"实际 {real_hms}{C.RESET}"
+                f"执行图 {C.LABEL}预计: {pred_hms} "
+                f"实际: {real_hms}{C.RESET}"
             )
-        return f"执行图 {C.LABEL}预计 {pred_hms}{C.RESET}"
+        return f"执行图 {C.LABEL}预计: {pred_hms}{C.RESET}"
 
     def _build_features_panel(
         self, running: bool,
@@ -787,6 +933,7 @@ class BaseTask(ABC):
                 self.right_view = "steps"
                 self._viewport_start = 0
                 self._loop_count_focused = False
+                self._loop_active = 0
                 self._sync_right_nav()
                 self.col_focus = "right"
             elif self.left_nav.index == 2:
@@ -794,6 +941,7 @@ class BaseTask(ABC):
                 self.right_view = "features"
                 self._viewport_start = 0
                 self._loop_count_focused = False
+                self._loop_active = 0
                 self.right_editing = False
                 self._thr_backup = None
                 self._sync_right_nav()
@@ -824,15 +972,40 @@ class BaseTask(ABC):
             if self._loop_count_focused:
                 if key == K.DOWN:
                     self._loop_count_focused = False
+                    self._loop_active = 0
                     self.right_nav.index = 0
                     return True
                 if key == K.UP:
                     return True  # 已在顶部
-                if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
-                    step_v: int = 10 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 1
-                    sign_v: int = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
-                    self._loop_count = max(0, self._loop_count + sign_v * step_v)
-                    self._save_loop_count()
+                # Shift+←→：切换当前可编辑数字（N ↔ 公式各项）
+                if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) and self._has_loop_formula():
+                    n_targets: int = 1 + len(self._loop_terms)
+                    if key == K.SHIFT_RIGHT:
+                        self._loop_active = (self._loop_active + 1) % n_targets
+                    else:
+                        self._loop_active = (self._loop_active - 1) % n_targets
+                    return True
+                # 普通 ←→：调整当前高亮数字 ±1
+                if key in (K.LEFT, K.RIGHT):
+                    sign_v: int = -1 if key == K.LEFT else 1
+                    if self._loop_active == 0:
+                        # 编辑 N（自由编辑，不受公式约束）
+                        self._loop_count = max(
+                            0, self._loop_count + sign_v,
+                        )
+                        self._save_loop_count()
+                    else:
+                        # 编辑公式某项 → N 按向下取整重算
+                        ti: int = self._loop_active - 1
+                        if 0 <= ti < len(self._loop_terms):
+                            self._loop_terms[ti] = max(
+                                0, self._loop_terms[ti] + sign_v,
+                            )
+                            self._loop_count = self.loop_formula_compute(
+                                self._loop_terms,
+                            )
+                            self._save_loop_count()
+                            self._save_loop_terms()
                     return True
                 if key == K.ENTER:
                     # 从头运行
@@ -841,6 +1014,7 @@ class BaseTask(ABC):
                         if activate_game_window():
                             self._start_node = None
                             self._loop_count_focused = False
+                            self._loop_active = 0
                             self.state = "running"
                     return True
                 return True
@@ -878,7 +1052,7 @@ class BaseTask(ABC):
             # 置信度调节中
             if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
                 step_v: float = (
-                    0.05 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 0.01
+                    0.10 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 0.05
                 )
                 sign_v: float = -1.0 if key in (K.LEFT, K.SHIFT_LEFT) else 1.0
                 self._adjust_slot_threshold(
@@ -1233,6 +1407,7 @@ class BaseTask(ABC):
             is_sel = (
                 (not running) and self.col_focus == "right"
                 and self.right_nav.index == nav_idx
+                and not self._loop_count_focused
             ) or (running and status == _ST_CUR)
             if running:
                 display_ms = (
@@ -1264,6 +1439,7 @@ class BaseTask(ABC):
             is_sel = (
                 (not running) and self.col_focus == "right"
                 and self.right_nav.index == nav_idx
+                and not self._loop_count_focused
             ) or (running and status == _ST_CUR)
             if running:
                 display_ms = (
@@ -1305,6 +1481,7 @@ class BaseTask(ABC):
             is_sel = (
                 (not running) and self.col_focus == "right"
                 and self.right_nav.index == nav_idx
+                and not self._loop_count_focused
             ) or (running and status == _ST_CUR)
             if running:
                 display_ms = (
@@ -1658,11 +1835,11 @@ class BaseTask(ABC):
 
         self._skip_active = start_node_id is not None
         self._loop_count_focused = False
-        loop_target: int = self._loop_count
+        self._loop_infinite: bool = (self._loop_count == 0)
         self._current_loop = 0
 
         try:
-            while loop_target == 0 or self._current_loop < loop_target:
+            while self._loop_infinite or self._loop_count > 0:
                 key = try_get_key()
                 if key is not None and key in (K.ESC, K.BS, K.ENTER):
                     return
@@ -1677,6 +1854,15 @@ class BaseTask(ABC):
                 sig: str = self._walk(steps)
                 if sig in ("end", "stop"):
                     return
+                # ── 一轮循环完成 ──
+                # 有限次数：每完成一轮 _loop_count 减 1 并持久化，
+                # 显示的数字随之实质减少；减到 0 即全部完成，停止运行，
+                # 此时 _loop_count 已为 0（即「无限」），下次进入任务即重置。
+                if not self._loop_infinite:
+                    self._loop_count = max(0, self._loop_count - 1)
+                    self._save_loop_count()
+                    if self._loop_count <= 0:
+                        return  # 全部完成，_loop_count 已归零（无限）
                 # "continue" → loop again from the top; first pass done.
                 self._skip_active = False
                 self._start_node = None

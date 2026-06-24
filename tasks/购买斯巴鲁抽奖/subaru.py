@@ -208,6 +208,16 @@ class SubaruTask(BaseTask):
         "需要截取厂牌和车辆卡片两个特征。"
     )
 
+    # 循环次数公式：N = 分子 ÷ 分母（向下取整）
+    loop_formula_template: str = "{0}÷{1}"
+    loop_formula_default_terms: list[int] | None = [357, 30]
+
+    def loop_formula_compute(self, terms: list[int]) -> int:
+        """N = terms[0] ÷ terms[1]（向下取整）。"""
+        if len(terms) >= 2 and terms[1] != 0:
+            return terms[0] // terms[1]
+        return 0
+
     # ── Setup ──────────────────────────────────────────────
 
     def _setup(self) -> None:

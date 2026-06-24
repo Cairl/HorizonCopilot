@@ -116,6 +116,12 @@
     }
   ],
   "settings": {
-    "global_threshold_fallback": 0.85
+    "global_threshold_fallback": 0.85,
+    "loop_count": 63,
+    "loop_formula_terms": [
+      999,
+      302,
+      10
+    ]
   }
 }

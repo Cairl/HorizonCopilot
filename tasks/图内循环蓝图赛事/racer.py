@@ -96,6 +96,16 @@ class RaceInnerTask(BaseTask):
         "注意：需要在难度设定中开启自动转向。"
     )
 
+    # 循环次数公式：N = (上限 − 下限) ÷ 步长（向下取整）
+    loop_formula_template: str = "({0}−{1})÷{2}"
+    loop_formula_default_terms: list[int] | None = [999, 357, 20]
+
+    def loop_formula_compute(self, terms: list[int]) -> int:
+        """N = (terms[0] − terms[1]) ÷ terms[2]（向下取整）。"""
+        if len(terms) >= 3 and terms[2] != 0:
+            return (terms[0] - terms[1]) // terms[2]
+        return 0
+
     # ── Setup ──────────────────────────────────────────────
 
     def _setup(self) -> None:
