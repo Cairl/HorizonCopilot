@@ -26,7 +26,7 @@ import pyautogui
 from udlrtui import Renderer
 
 from core.task_base import BaseTask, Branch, StepConfig
-from core.feature_store import FeatureStore
+from core.feature_store import FeatureStore, CATEGORY_MONITOR
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
@@ -106,6 +106,7 @@ class AuctionTask(BaseTask):
             slot_types=[t.value for t in FeatureType],
             slot_labels=SLOT_LABELS,
             default_steps=_DEFAULT_STEPS,
+            slot_categories={t.value: CATEGORY_MONITOR for t in FeatureType},
         )
         self.store.load()
         self.store.load_all_templates()

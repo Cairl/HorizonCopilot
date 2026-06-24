@@ -35,6 +35,28 @@ import numpy as np
 import pyautogui
 
 
+# ── Slot categories ──────────────────────────────────────
+# 特征槽位分两类，对应两种步骤的用途：
+#
+# * ``CATEGORY_MONITOR`` (监测特征) — ``match`` 步骤用。特征出现在
+#   已知固定位置（截取时框定的 region），运行时只在该区域截图判断
+#   是否出现，用于判断画面进入了哪个状态。
+#
+# * ``CATEGORY_LOCATOR`` (定位特征) — ``click_match`` 步骤用。特征
+#   出现位置不固定，运行时全屏截图搜索（``locate_template_fullscreen``），
+#   找到后点击匹配中心。
+CATEGORY_MONITOR: str = "monitor"
+CATEGORY_LOCATOR: str = "locator"
+
+CATEGORY_LABELS: dict[str, str] = {
+    CATEGORY_MONITOR: "监测特征",
+    CATEGORY_LOCATOR: "定位特征",
+}
+
+# 渲染顺序：监测特征在前，定位特征在后。
+CATEGORY_ORDER: list[str] = [CATEGORY_MONITOR, CATEGORY_LOCATOR]
+
+
 @dataclass
 class FeatureSlot:
     """单个特征槽位 — 一个可识别的屏幕状态。
@@ -87,6 +109,10 @@ class FeatureStore:
         slot_types: 槽位类型列表，如 ``["car_present", "car_absent", ...]``。
         slot_labels: 槽位中文标签映射，如 ``{"car_present": "有车状态"}``。
         default_steps: 迁移旧配置时使用的默认步骤列表（可为空）。
+        slot_categories: 槽位类别映射，如
+            ``{"subaru_factory": "locator"}``。未指定的槽位默认为
+            :data:`CATEGORY_MONITOR`。类别决定特征库视图的分组和
+            ``click_match`` 步骤是否要求 ``region``。
     """
 
     def __init__(
@@ -95,11 +121,16 @@ class FeatureStore:
         slot_types: list[str],
         slot_labels: dict[str, str],
         default_steps: list[dict] | None = None,
+        slot_categories: dict[str, str] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.config_file = self.data_dir / "config.json"
         self.SLOT_TYPES: list[str] = list(slot_types)
         self.SLOT_LABELS: dict[str, str] = dict(slot_labels)
+        self.SLOT_CATEGORIES: dict[str, str] = {
+            t: (slot_categories or {}).get(t, CATEGORY_MONITOR)
+            for t in self.SLOT_TYPES
+        }
         self._default_steps: list[dict] = list(default_steps) if default_steps else []
         self.slots: dict[str, FeatureSlot] = {
             t: FeatureSlot(feature_type=t) for t in self.SLOT_TYPES
@@ -295,6 +326,9 @@ class FeatureStore:
     ) -> tuple[FeatureSlot | None, float, int, int]:
         """截图匹配并返回最佳匹配点在屏幕上的绝对坐标。
 
+        仅在 ``slot.region`` 指定的固定区域内截图匹配 —— 用于
+        ``match`` 步骤（特征出现在已知位置的场景）。
+
         Returns:
             ``(slot, confidence, abs_x, abs_y)`` —
             *slot* 为匹配的槽位（或 ``None``），*confidence* 为
@@ -321,6 +355,39 @@ class FeatureStore:
         except Exception:
             return None, 0.0, 0, 0
 
+    def locate_template_fullscreen(
+        self, feature_type: str,
+    ) -> tuple[FeatureSlot | None, float, int, int]:
+        """全屏截图匹配并返回最佳匹配点在屏幕上的绝对坐标。
+
+        与 :meth:`locate_template` 不同，此方法不依赖 ``slot.region``，
+        而是截取整个屏幕后做模板匹配 —— 用于 ``click_match`` 步骤
+        （特征可能出现在屏幕任意位置、需要先找到再点击的场景）。
+
+        仅要求槽位有模板图片，``slot.region`` 可为 ``None``。
+
+        Returns:
+            ``(slot, confidence, abs_x, abs_y)`` — 含义同
+            :meth:`locate_template`，但坐标基于全屏截图。
+        """
+        from core.template_match import locate_template as _loc
+
+        slot = self.slots.get(feature_type)
+        if slot is None or not slot.has_template():
+            return None, 0.0, 0, 0
+
+        try:
+            screenshot = pyautogui.screenshot()
+            scr_np: np.ndarray = np.array(screenshot)
+            conf, mx, my = _loc(scr_np, slot.template_image)
+            tw: int = slot.template_image.shape[1]
+            th: int = slot.template_image.shape[0]
+            cx: int = mx + tw // 2
+            cy: int = my + th // 2
+            return slot, conf, cx, cy
+        except Exception:
+            return None, 0.0, 0, 0
+
     # ── Sequence protocol ───────────────────────────────────
 
     def __len__(self) -> int:
@@ -332,6 +399,26 @@ class FeatureStore:
     def __iter__(self):
         for t in self.SLOT_TYPES:
             yield self.slots[t]
+
+    # ── Category helpers ───────────────────────────────────
+
+    def slot_category(self, feature_type: str) -> str:
+        """返回槽位的类别（``CATEGORY_MONITOR`` / ``CATEGORY_LOCATOR``）。
+
+        未注册的 *feature_type* 视为监测特征。
+        """
+        return self.SLOT_CATEGORIES.get(feature_type, CATEGORY_MONITOR)
+
+    def iter_by_category(self):
+        """按类别分组产出槽位（先监测后定位，组内按 SLOT_TYPES 顺序）。
+
+        特征库视图用此方法渲染分组；``list(store)`` 仍按原始
+        ``SLOT_TYPES`` 顺序（与 config.json 一致）。
+        """
+        for cat in CATEGORY_ORDER:
+            for t in self.SLOT_TYPES:
+                if self.SLOT_CATEGORIES.get(t) == cat:
+                    yield self.slots[t]
 
     # ── Internal helpers ────────────────────────────────────
 

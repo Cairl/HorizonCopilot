@@ -53,7 +53,7 @@
 
 | 模块 | 职责 |
 |------|------|
-| `subaru.py` | `SubaruTask` 抽奖任务实现、`FeatureType` 枚举（`subaru_factory` / `subaru_car`）、`SLOT_LABELS` 标签、默认步骤树、`_run_core_loop` 主循环（含 `click_match` 模板点击支持） |
+| `subaru.py` | `SubaruTask` 抽奖任务实现、`FeatureType` 枚举（`subaru_factory` / `subaru_car`）、`SLOT_LABELS` 标签、默认步骤树、`_run_core_loop` 主循环（含 `click_match` 全屏模板点击支持） |
 | `data/` | 任务数据（`config.json` + 模板 PNG） |
 
 ## 执行图模型
@@ -72,18 +72,19 @@
 | `hold` | 按住 | 是 | 按下并保持 N ms 后抬起（`等待 N ms 按住 X`），延迟为按住时长 |
 | `press` | 按下 | 是 | 仅按下按键不抬起（`keyDown`），用于跨步骤保持按键状态（如按住油门跑全程），延迟极小（通常 0.01s） |
 | `release` | 抬起 | 是 | 仅抬起按键（`keyUp`），配合 `press` 使用，在匹配步骤完成后释放之前按下的按键 |
-| `click_match` | 点击 | 是 | 模板匹配后鼠标点击匹配位置（`每隔 N ms 点击 {特征名}`），loop until found → pyautogui.click |
+| `click_match` | 左键/右键/中键 | 是 | 全屏搜索特征后鼠标 Win32 点击匹配中心（`每隔 N ms 左键 {特征名}`），标签由 `step.button` 决定。不依赖 `slot.region`，截全屏做模板匹配（特征位置不固定），找到后 SetCursorPos + mouse_event 点击并还原光标位置 |
 | `wait` | 等待 | 是 | 纯等待步骤（`等待 N ms`） |
-| `match` | 判断 | 是 | 截图识别步骤（`每隔 N ms 检测 {特征名}`），延迟为截图前等待画面稳定的时间。三种模式：无分支（循环检测直到识别到）、单次分支（`fallback_key` 兜底，one-shot）、循环分支（`loop_until_match=True`，循环检测直到某分支匹配） |
+| `match` | 判断 | 是 | 截图识别步骤（`每隔 N ms 检测 {特征名}`），延迟为截图前等待画面稳定的时间。在 `slot.region` 固定区域内匹配（特征位置已知）；定位特征则全屏匹配后 Win32 点击。三种模式：无分支（循环检测直到识别到）、单次分支（`fallback_key` 兜底，one-shot）、循环分支（`loop_until_match=True`，循环检测直到某分支匹配）。循环分支支持 else 分支（条件名不在 SLOT_LABELS 中），所有特征分支不匹配时走 else，常用于"如果失败 → 重试"模式 |
 | `Branch` | — | 否 | 分支条件行，渲染为纯条件名（如`有车状态`），紫色（MAUVE）显示，不可导航——判定后直接操作 |
 
 ### 导航与编辑
 
 - `_iter_nav_steps` 产出所有可导航节点：`keypress`/`click`/`hold`/`press`/`release`（delay）、`wait`（wait）、`match`/`click_match`（match_delay）。`Branch` 不可导航——它是判定结果，无需等待
-- 光标停在可导航行上，←→ 直接调整延迟（每次 +-10ms），Shift+←→ 以 1000ms 为单位调整。无需 Enter 进入编辑模式
+- 光标停在可导航行上，←→ 直接调整延迟（每次 +-100ms），Shift+←→ 以 1000ms 为单位调整（自动去零：snap 到最近 1000ms 倍数再步进）。无需 Enter 进入编辑模式
 - 上下键划走即可离开，无需 Enter 确认 / Esc 取消
 - 调整后立即热保存到 config（序列化整棵树写回）
-- `match` 步骤渲染为「每隔 N ms 检测 {特征名}」（特征名来自 `feature_type` 经 `SLOT_LABELS` 映射），延迟为截图前等待画面稳定的时间。其分支条件行（如 有车状态 / 无车状态）渲染为纯条件名，以紫色（MAUVE）显示
+- `match` 步骤渲染为「每隔 N ms 检测 {特征名}」（定位特征则显示「左键」），特征名来自 `feature_type` 经 `SLOT_LABELS` 映射。其分支条件行（如 有车状态 / 无车状态）渲染为纯条件名，以紫色（MAUVE）显示。无步骤且无 loop 的空分支不渲染
+- `click_match` 步骤渲染为「每隔 N ms 左键 {特征名}」（按钮标签由 `step.button` 决定：左键/右键/中键），延迟为截图前等待画面稳定的时间。运行时全屏截图搜索特征（`locate_template_fullscreen`，不依赖 `slot.region`），找到后点击匹配中心
 - 运行时 `match` 步骤通过 `_countdown` 倒计时显示剩余毫秒，倒计时结束后瞬时截图判定
 - `match` 步骤的 `loop_until_match=True` 时走循环分支模式（`_looping_branched_match`）：每次倒计时后依次检测各分支特征，取首个匹配者执行其 `steps`；无匹配时重新倒计时。分支 `loop` 取值：`"结束"` 结束运行、`"回到本步骤"` 回到本 `match` 继续检测、其他值（含 `None`）继续后续步骤
 - **0ms = 暂停**：将步骤延迟设为 0ms 时，运行到该步骤不会立即执行，而是将运行状态归位（开始按钮变回"开始运行"、所有节点状态清零无高亮、光标聚焦到当前 0ms 行但不锁住——用户可继续移动光标 / 调整延迟），阻塞等待用户按 Enter 继续执行；Esc/Backspace 终止运行。暂停期间不检查焦点守卫
@@ -105,7 +106,16 @@
 
 ## 特征库
 
-`FeatureStore` 参数化设计：槽位类型和标签由任务注入。拍卖场抢车任务使用 4 个固定槽位；图外循环蓝图赛事任务使用 3 个槽位；图内循环蓝图赛事任务使用 2 个槽位；购买斯巴鲁抽奖任务使用 2 个槽位。槽位标签见各任务的 `SLOT_LABELS`，与执行图分支条件名保持一致。
+`FeatureStore` 参数化设计：槽位类型、标签、类别由任务注入。槽位分两类：
+
+| 类别 | 常量 | 用途 | 匹配方式 |
+|------|------|------|----------|
+| 监测特征 | `CATEGORY_MONITOR` | `match` 步骤 | 在 `slot.region` 固定区域内截图判断是否出现（`locate_template`） |
+| 定位特征 | `CATEGORY_LOCATOR` | `click_match` 步骤 | 全屏截图搜索位置后点击（`locate_template_fullscreen`），不依赖 `region` |
+
+特征库视图按类别分组渲染：先「监测特征」组（`-- 监测特征 --` 标题行 + 槽位行），再「定位特征」组。标题行不可导航（`is_sel=False`），`right_nav.index` 只索引槽位行（跨组连续编号，顺序由 `iter_by_category()` 决定：先 monitor 后 locator，组内按 `SLOT_TYPES` 顺序）。空组不渲染。
+
+各任务槽位：拍卖场抢车 4 个监测槽位；图外循环蓝图赛事 3 个监测槽位；图内循环蓝图赛事 2 个监测槽位；购买斯巴鲁抽奖 2 个定位槽位。槽位标签见各任务的 `SLOT_LABELS`，与执行图分支条件名保持一致。
 
 ## 配置
 
@@ -115,7 +125,7 @@
 
 - 左栏 `Enter` 执行图/特征库 → 打开视图并切换焦点到右栏。`→` 不再切换焦点
 - 右栏步骤选中行后 `←→` 直接调整延迟，`Enter` 从该行开始运行，`Esc` 退回左栏
-- 右栏特征库选中行后 `←→` 切换截取/删除，`Enter` 执行操作，`Esc` 退回左栏
+- 右栏特征库按类别分组（监测特征/定位特征），选中行（槽位行，跳过标题行）后 `←→` 切换截取/删除，`Enter` 执行操作，`Esc` 退回左栏
 - 无编辑模式——所有操作在选中行上直接执行
 
 ## 视口滚动

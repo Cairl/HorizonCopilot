@@ -19,7 +19,7 @@ import pyautogui
 from udlrtui import Renderer
 
 from core.task_base import BaseTask, Branch, StepConfig
-from core.feature_store import FeatureStore
+from core.feature_store import FeatureStore, CATEGORY_LOCATOR
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
@@ -35,15 +35,19 @@ DATA_DIR = _TASK_DIR / "data"
 class FeatureType(Enum):
     """购买斯巴鲁抽奖任务所需的特征类型。"""
 
-    SUBARU_FACTORY = "subaru_factory"
-    """斯巴鲁厂商标识。"""
+    SUBARU_FACTORY_LOWER = "subaru_factory_lower"
+    """斯巴鲁牌商标（小写）。第 9 行用。"""
+
+    SUBARU_FACTORY_UPPER = "subaru_factory_upper"
+    """斯巴鲁牌商标（大写）。上车/卖车阶段用。"""
 
     SUBARU_CAR = "subaru_car"
     """斯巴鲁车辆标识。"""
 
 
 SLOT_LABELS: dict[str, str] = {
-    "subaru_factory": "斯巴鲁厂",
+    "subaru_factory_lower": "斯巴鲁牌(小写)",
+    "subaru_factory_upper": "斯巴鲁牌(大写)",
     "subaru_car": "斯巴鲁车",
 }
 
@@ -56,12 +60,18 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "下", "type": "keypress", "key": "down", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Backspace", "type": "keypress", "key": "backspace", "delay": 0.05},
-    {"name": "上", "type": "keypress", "key": "up", "delay": 0.05},
     {
-        "name": "点击斯巴鲁厂",
-        "type": "click_match",
-        "feature_type": "subaru_factory",
-        "delay": 0.5,
+        "name": "判断斯巴鲁牌小写",
+        "type": "match",
+        "feature_type": "subaru_factory_lower",
+        "delay": 1.0,
+        "loop_until_match": True,
+        "branches": [
+          {"condition": "斯巴鲁牌(小写)", "steps": []},
+          {"condition": "如果失败", "loop": "回到本步骤", "steps": [
+            {"name": "上", "type": "keypress", "key": "up", "delay": 0.05}
+          ]}
+        ]
     },
     {"name": "下", "type": "keypress", "key": "down", "delay": 0.05},
     {"name": "Space", "type": "keypress", "key": "space", "delay": 0.05},
@@ -76,18 +86,31 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "PageDown", "type": "keypress", "key": "pagedown", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Backspace", "type": "keypress", "key": "backspace", "delay": 0.05},
-    {"name": "上", "type": "keypress", "key": "up", "delay": 0.05},
     {
-        "name": "点击斯巴鲁厂",
-        "type": "click_match",
-        "feature_type": "subaru_factory",
-        "delay": 0.5,
+        "name": "判断斯巴鲁牌大写",
+        "type": "match",
+        "feature_type": "subaru_factory_upper",
+        "delay": 1.0,
+        "loop_until_match": True,
+        "branches": [
+          {"condition": "斯巴鲁牌(大写)", "steps": []},
+          {"condition": "如果失败", "loop": "回到本步骤", "steps": [
+            {"name": "上", "type": "keypress", "key": "up", "delay": 0.05}
+          ]}
+        ]
     },
     {
-        "name": "点击斯巴鲁车",
-        "type": "click_match",
+        "name": "左键斯巴鲁车",
+        "type": "match",
         "feature_type": "subaru_car",
         "delay": 0.5,
+        "loop_until_match": True,
+        "branches": [
+          {"condition": "斯巴鲁车", "steps": []},
+          {"condition": "如果失败", "loop": "回到本步骤", "steps": [
+            {"name": "右", "type": "keypress", "key": "right", "delay": 0.05}
+          ]}
+        ]
     },
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
@@ -97,7 +120,7 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "下", "type": "keypress", "key": "down", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
-    {"name": "左", "type": "keypress", "key": "left", "delay": 0.05},
+    {"name": "右", "type": "keypress", "key": "right", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "上", "type": "keypress", "key": "up", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
@@ -120,18 +143,31 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "PageDown", "type": "keypress", "key": "pagedown", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Backspace", "type": "keypress", "key": "backspace", "delay": 0.05},
-    {"name": "上", "type": "keypress", "key": "up", "delay": 0.05},
     {
-        "name": "点击斯巴鲁厂",
-        "type": "click_match",
-        "feature_type": "subaru_factory",
-        "delay": 0.5,
+        "name": "判断斯巴鲁牌大写",
+        "type": "match",
+        "feature_type": "subaru_factory_upper",
+        "delay": 1.0,
+        "loop_until_match": True,
+        "branches": [
+          {"condition": "斯巴鲁牌(大写)", "steps": []},
+          {"condition": "如果失败", "loop": "回到本步骤", "steps": [
+            {"name": "上", "type": "keypress", "key": "up", "delay": 0.05}
+          ]}
+        ]
     },
     {
-        "name": "点击斯巴鲁车",
-        "type": "click_match",
+        "name": "左键斯巴鲁车",
+        "type": "match",
         "feature_type": "subaru_car",
         "delay": 0.5,
+        "loop_until_match": True,
+        "branches": [
+          {"condition": "斯巴鲁车", "steps": []},
+          {"condition": "如果失败", "loop": "回到本步骤", "steps": [
+            {"name": "右", "type": "keypress", "key": "right", "delay": 0.05}
+          ]}
+        ]
     },
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "下", "type": "keypress", "key": "down", "delay": 0.05},
@@ -142,6 +178,7 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "下", "type": "keypress", "key": "down", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Esc", "type": "keypress", "key": "esc", "delay": 0.05},
+    {"name": "PageUp", "type": "keypress", "key": "pageup", "delay": 0.05},
 ]
 
 
@@ -154,10 +191,10 @@ class SubaruTask(BaseTask):
 
     流程::
 
-        ① 买车: 菜单导航 → 点击斯巴鲁厂 → 购买车辆
-        ② 上车: 翻页 → 点击斯巴鲁厂/斯巴鲁车 → 驾驶
+        ① 买车: 菜单导航 → 左键斯巴鲁厂 → 购买车辆
+        ② 上车: 翻页 → 左键斯巴鲁厂/斯巴鲁车 → 驾驶
         ③ 抽奖: 技能点抽奖 → 共三次 → 结算
-        ④ 卖车: 菜单导航 → 点击斯巴鲁厂/斯巴鲁车 → 卖出 → 回到①
+        ④ 卖车: 菜单导航 → 左键斯巴鲁厂/斯巴鲁车 → 卖出 → 回到①
 
     所需特征类型 (2 个槽位):
         - ``subaru_factory`` — 斯巴鲁厂商标识（必需）
@@ -181,6 +218,7 @@ class SubaruTask(BaseTask):
             slot_types=[t.value for t in FeatureType],
             slot_labels=SLOT_LABELS,
             default_steps=_DEFAULT_STEPS,
+            slot_categories={t.value: CATEGORY_LOCATOR for t in FeatureType},
         )
         self.store.load()
         self.store.load_all_templates()
@@ -222,12 +260,12 @@ class SubaruTask(BaseTask):
                         SubaruTask._fill_node_ids(lb.steps, db.steps)
 
     def _default_steps(self) -> list[StepConfig]:
-        """Return the hardcoded default step tree (65 steps, 4 phases)."""
+        """Return the hardcoded default step tree (64 steps, 4 phases)."""
         _KP = lambda n, k, d=0.05: StepConfig(n, type="keypress", key=k, delay=d)
         _CM = lambda n, f, d=0.5: StepConfig(
             n, type="click_match", feature_type=f, delay=d,
         )
-        return [
+        steps = [
             # ── 1. 买车 ──
             _KP("左", "left"),                                  #  0
             _KP("Enter", "enter"),                               #  1
@@ -236,9 +274,18 @@ class SubaruTask(BaseTask):
             _KP("下", "down"),                                   #  4
             _KP("Enter", "enter"),                               #  5
             _KP("Backspace", "backspace"),                       #  6
-            _KP("上", "up"),                                     #  7
-            _CM("点击斯巴鲁厂", "subaru_factory"),               #  8
-            _KP("下", "down"),                                   #  9
+            StepConfig(
+                "判断斯巴鲁牌小写", type="match",
+                feature_type="subaru_factory_lower",
+                delay=1.0, loop_until_match=True,
+                branches=[
+                    Branch("斯巴鲁牌(小写)", []),
+                    Branch("如果失败", [
+                        _KP("上", "up"),
+                    ], loop="回到本步骤"),
+                ],
+            ),                                                  #  7
+            _KP("下", "down"),                                   # 10
             _KP("Space", "space"),                              # 10
             _KP("下", "down"),                                  # 11
             _KP("Enter", "enter"),                              # 12
@@ -251,18 +298,38 @@ class SubaruTask(BaseTask):
             _KP("PageDown", "pagedown"),                        # 18
             _KP("Enter", "enter"),                              # 19
             _KP("Backspace", "backspace"),                      # 20
-            _KP("上", "up"),                                    # 21
-            _CM("点击斯巴鲁厂", "subaru_factory"),               # 22
-            _CM("点击斯巴鲁车", "subaru_car"),                   # 23
-            _KP("Enter", "enter"),                              # 24
+            # 全屏匹配斯巴鲁牌(大写)，找到点击，如果失败按 UP 重试
+            StepConfig(
+                "判断斯巴鲁牌大写", type="match",
+                feature_type="subaru_factory_upper",
+                delay=1.0, loop_until_match=True,
+                branches=[
+                    Branch("斯巴鲁牌(大写)", []),
+                    Branch("如果失败", [
+                        _KP("上", "up"),
+                    ], loop="回到本步骤"),
+                ],
+            ),                                                  # 22
+            StepConfig(
+                "左键斯巴鲁车", type="match",
+                feature_type="subaru_car",
+                delay=0.5, loop_until_match=True,
+                branches=[
+                    Branch("斯巴鲁车", []),
+                    Branch("如果失败", [
+                        _KP("右", "right"),
+                    ], loop="回到本步骤"),
+                ],
+            ),                                                  # 23
             _KP("Enter", "enter"),                              # 25
+            _KP("Enter", "enter"),                              # 26
             # ── 3. 抽奖 ──
-            _KP("Esc", "esc"),                                  # 26
+            _KP("Esc", "esc"),                                  # 28
             _KP("PageDown", "pagedown"),                        # 27
             _KP("下", "down"),                                  # 28
             _KP("Enter", "enter"),                              # 29
             _KP("Enter", "enter"),                              # 30
-            _KP("左", "left"),                                  # 31
+            _KP("右", "right"),                                 # 31
             _KP("Enter", "enter"),                              # 32
             _KP("上", "up"),                                    # 33
             _KP("Enter", "enter"),                              # 34
@@ -285,19 +352,46 @@ class SubaruTask(BaseTask):
             _KP("PageDown", "pagedown"),                        # 50
             _KP("Enter", "enter"),                              # 51
             _KP("Backspace", "backspace"),                      # 52
-            _KP("上", "up"),                                    # 53
-            _CM("点击斯巴鲁厂", "subaru_factory"),               # 54
-            _CM("点击斯巴鲁车", "subaru_car"),                   # 55
-            _KP("Enter", "enter"),                              # 56
-            _KP("下", "down"),                                  # 57
+            StepConfig(
+                "判断斯巴鲁牌大写", type="match",
+                feature_type="subaru_factory_upper",
+                delay=1.0, loop_until_match=True,
+                branches=[
+                    Branch("斯巴鲁牌(大写)", []),
+                    Branch("如果失败", [
+                        _KP("上", "up"),
+                    ], loop="回到本步骤"),
+                ],
+            ),                                                  # 54
+            StepConfig(
+                "左键斯巴鲁车", type="match",
+                feature_type="subaru_car",
+                delay=0.5, loop_until_match=True,
+                branches=[
+                    Branch("斯巴鲁车", []),
+                    Branch("如果失败", [
+                        _KP("右", "right"),
+                    ], loop="回到本步骤"),
+                ],
+            ),                                                  # 55
+            _KP("Enter", "enter"),                              # 57
             _KP("下", "down"),                                  # 58
+            _KP("下", "down"),                                  # 59
             _KP("下", "down"),                                  # 59
             _KP("下", "down"),                                  # 60
             _KP("Enter", "enter"),                              # 61
             _KP("下", "down"),                                  # 62
             _KP("Enter", "enter"),                              # 63
             _KP("Esc", "esc"),                                  # 64
+            _KP("PageUp", "pageup"),                             # 65
         ]
+        # Auto-generate node_ids so runtime highlighting works.
+        # The numbering mirrors the #comment on each line above.
+        for i, step in enumerate(steps, start=1):
+            if step.node_id is None:
+                step.node_id = f"subaru_s{i:02d}"
+
+        return steps
 
     # ── Step definitions ───────────────────────────────────
 

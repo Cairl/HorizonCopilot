@@ -30,6 +30,8 @@ focus-guard, 0 ms pause, and start-from-node skipping.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -64,6 +66,7 @@ class StepConfig:
             ``"click_match"`` steps (e.g. ``"subaru_factory"``).
         button: Mouse button for ``"click_match"`` steps
             (``"left"`` | ``"right"`` | ``"middle"``).  Default ``"left"``.
+            Determines the rendered label (左键 / 右键 / 中键).
         clicks: Number of clicks for ``"click_match"`` steps
             (1 = single, 2 = double).  Default 1.
         fallback_key: Optional key to press when a branched ``match``
@@ -85,6 +88,13 @@ class StepConfig:
             serialised to config.
         runtime_remaining_ms: Runtime-only countdown remaining
             milliseconds (only set during ``_ST_CUR``).  Not serialised.
+
+    Note on ``match`` vs ``click_match``:
+
+        - ``match`` — 在 ``slot.region`` 固定区域内截图判断特征是否
+          出现（特征位置已知）。仅需模板 + region。
+        - ``click_match`` — 全屏截图搜索特征位置，找到后点击匹配
+          中心（特征位置不固定）。仅需模板，``slot.region`` 被忽略。
     """
 
     name: str
@@ -95,6 +105,7 @@ class StepConfig:
     button: str = "left"
     clicks: int = 1
     fallback_key: str | None = None
+    retry_key: str | None = None  # for click_match: press on each failed match
     children: list[StepConfig] | None = None
     branches: list[Branch] | None = None
     node_id: str | None = None
@@ -139,13 +150,27 @@ _ACTION_LABELS: dict[str, str] = {
     "hold": "按住",
     "wait": "等待",
     "match": "判断",
-    "click_match": "点击",
+    # ``click_match`` 不在此映射中 — 其标签由 ``click_match_label``
+    # 根据 ``step.button`` 动态生成（左键 / 右键 / 中键）。
+}
+
+# Mouse-button → Chinese label for ``click_match`` steps.
+_BUTTON_LABELS: dict[str, str] = {
+    "left": "左键",
+    "right": "右键",
+    "middle": "中键",
+    "none": "悬停",
 }
 
 
 def action_label(type_str: str) -> str:
     """Return the Chinese action label for a step type."""
     return _ACTION_LABELS.get(type_str, type_str)
+
+
+def click_match_label(button: str) -> str:
+    """Return the Chinese label for a ``click_match`` step's mouse button."""
+    return _BUTTON_LABELS.get(button, button)
 
 
 def _fmt_ms(n: int) -> str:
@@ -525,38 +550,72 @@ class BaseTask(ABC):
     def _build_features_panel(
         self, running: bool,
     ) -> tuple[list[tuple[str, bool]], int]:
-        """Build the feature-library right-column rows + inner width."""
-        slots = list(self.store) if self.store is not None else []
+        """Build the feature-library right-column rows + inner width.
+
+        Slots are rendered in two groups — 监测特征 (``match`` steps)
+        then 定位特征 (``click_match`` steps) — each preceded by a
+        non-navigable category header row.  ``right_nav.index`` maps
+        into the flat slot list (grouped order), skipping headers.
+        """
+        from core.feature_store import (
+            CATEGORY_ORDER, CATEGORY_LABELS,
+        )
+
+        store = self.store
+        if store is None:
+            return [], 20
+
+        # Flat slot list in grouped order — right_nav.index addresses this.
+        nav_slots: list = list(store.iter_by_category())
+
+        # Group slots by category (preserving grouped order).
+        grouped: dict[str, list] = {c: [] for c in CATEGORY_ORDER}
+        for slot in nav_slots:
+            grouped[store.slot_category(slot.feature_type)].append(slot)
+
+        # Width: account for slot rows and category headers.
         samples: list[str] = []
-        for slot in slots:
-            label = self.store.SLOT_LABELS.get(
+        for slot in nav_slots:
+            label = store.SLOT_LABELS.get(
                 slot.feature_type, slot.feature_type,
             )
             samples.append(f"{label} [截取] [删除]")
+        for cat in CATEGORY_ORDER:
+            if grouped[cat]:
+                samples.append(f"-- {CATEGORY_LABELS.get(cat, cat)} --")
         max_w: int = max([display_width(s) for s in samples] + [20])
         right_w: int = max_w + 4
 
         rows: list[tuple[str, bool]] = []
-        for i, slot in enumerate(slots):
-            label = self.store.SLOT_LABELS.get(
-                slot.feature_type, slot.feature_type,
-            )
-            cap_color: str = C.GREEN if slot.has_template() else C.YELLOW
-            cap_b = f"[{C.BOLD}{cap_color}截取{C.RESET}]"
-            cap_g = f" {cap_color}截取{C.RESET} "
-            dlt_b = f"[{C.BOLD}{C.RED}删除{C.RESET}]"
-            dlt_g = f" {C.RED}删除{C.RESET} "
-            is_cursor: bool = (not running) and self.col_focus == "right" \
-                and self.right_nav.index == i
-            if is_cursor:
-                # Cursor on this row — brackets on the current action
-                cap = cap_b if self._slot_action == 0 else cap_g
-                dlt = dlt_b if self._slot_action == 1 else dlt_g
-                content: str = f"{label} {cap}{dlt}"
-                rows.append((W.inner_sel(content, right_w), True))
-            else:
-                content = f"{label} {cap_g}{dlt_g}"
-                rows.append((W.inner_line(content, right_w), False))
+        nav_idx: int = 0
+        for cat in CATEGORY_ORDER:
+            cat_slots: list = grouped[cat]
+            if not cat_slots:
+                continue
+            # Category header — non-navigable, is_sel always False.
+            cat_label: str = CATEGORY_LABELS.get(cat, cat)
+            header: str = f"{C.MAUVE}{C.BOLD}{cat_label}{C.RESET}"
+            rows.append((W.inner_line(header, right_w), False))
+            for slot in cat_slots:
+                label = store.SLOT_LABELS.get(
+                    slot.feature_type, slot.feature_type,
+                )
+                cap_color: str = C.GREEN if slot.has_template() else C.YELLOW
+                cap_b = f"[{C.BOLD}{cap_color}截取{C.RESET}]"
+                cap_g = f" {cap_color}截取{C.RESET} "
+                dlt_b = f"[{C.BOLD}{C.RED}删除{C.RESET}]"
+                dlt_g = f" {C.RED}删除{C.RESET} "
+                is_cursor: bool = (not running) and self.col_focus == "right" \
+                    and self.right_nav.index == nav_idx
+                if is_cursor:
+                    cap = cap_b if self._slot_action == 0 else cap_g
+                    dlt = dlt_b if self._slot_action == 1 else dlt_g
+                    content: str = f"{label} {cap}{dlt}"
+                    rows.append((W.inner_sel(content, right_w), True))
+                else:
+                    content = f"{label} {cap_g}{dlt_g}"
+                    rows.append((W.inner_line(content, right_w), False))
+                nav_idx += 1
         return rows, right_w
 
     # ── Idle key handling ─────────────────────────────────
@@ -654,10 +713,10 @@ class BaseTask(ABC):
                 self.right_nav.handle(key)
                 return True
             if key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
-                delta: int = 1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 10
+                delta: int = 1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 100
                 sign: int = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
                 self._adjust_step_delay(
-                    self.right_nav.index, sign * delta,
+                    self.right_nav.index, sign * delta, step_ms=delta,
                 )
                 return True
             if key == K.ENTER:
@@ -702,11 +761,16 @@ class BaseTask(ABC):
         """
         return self.store is not None
 
-    def _adjust_step_delay(self, nav_idx: int, delta_ms: int) -> None:
-        """Adjust the delay of the navigable node at *nav_idx* by *delta_ms*.
+    def _adjust_step_delay(
+        self, nav_idx: int, delta_ms: int, step_ms: int = 0,
+    ) -> None:
+        """Adjust the delay of the navigable node at *nav_idx*.
 
         *nav_idx* is 0-based into the navigable steps list (i.e.
-        ``right_nav.index`` in the steps view).
+        ``right_nav.index`` in the steps view).  When *step_ms* is
+        non-zero, the current value is truncated toward the movement
+        direction to a multiple of *step_ms* before applying
+        *delta_ms* ("去零").
         """
         steps: list[StepConfig] = self.get_steps()
         nav_steps: list[tuple[StepConfig, str]] = list(
@@ -715,7 +779,17 @@ class BaseTask(ABC):
         if nav_idx < 0 or nav_idx >= len(nav_steps):
             return
         step, _nav_type = nav_steps[nav_idx]
-        new_ms: int = max(0, int(step.delay * 1000) + delta_ms)
+        cur_ms: int = int(step.delay * 1000)
+        if step_ms > 0:
+            # 去零: 往移动方向截断到整千再步进
+            # 1600 + Shift+Right -> floor(1600)=1000 + 1000 = 2000
+            # 1600 + Shift+Left  -> ceil(1600)=2000 - 1000 = 1000
+            if delta_ms > 0:
+                cur_ms = (cur_ms // step_ms) * step_ms  # floor
+            elif delta_ms < 0:
+                cur_ms = -(-cur_ms // step_ms) * step_ms  # ceil
+            # delta_ms == 0 -> no snap (shouldn't happen with step_ms > 0)
+        new_ms: int = max(0, cur_ms + delta_ms)
         step.delay = new_ms / 1000.0
         if self.store is not None:
             steps_data: list[dict] = [self._step_to_dict(s) for s in steps]
@@ -726,7 +800,8 @@ class BaseTask(ABC):
         if self.store is None:
             return
         slot_idx: int = self.right_nav.index
-        slots_list = list(self.store)
+        # Use grouped order to match _build_features_panel's nav indexing.
+        slots_list = list(self.store.iter_by_category())
         if slot_idx < 0 or slot_idx >= len(slots_list):
             return
         slot = slots_list[slot_idx]
@@ -751,7 +826,7 @@ class BaseTask(ABC):
         if self.store is None:
             return
         slot_idx: int = self.right_nav.index
-        slots_list = list(self.store)
+        slots_list = list(self.store.iter_by_category())
         if slot_idx < 0 or slot_idx >= len(slots_list):
             return
         slot = slots_list[slot_idx]
@@ -837,15 +912,22 @@ class BaseTask(ABC):
                 )
             elif step.type == "match":
                 feat_label: str = self._match_feature_label(step)
+                action: str = (
+                    click_match_label("left")
+                    if self._is_locator_slot(
+                        (step.feature_type or "").split("/")[0]
+                    ) else "检测"
+                )
                 samples.append(
                     f"000 {full_prefix}每隔 {_fmt_ms(int(step.delay * 1000))} ms "
-                    f"检测 {feat_label}"
+                    f"{action} {feat_label}"
                 )
             elif step.type == "click_match":
                 feat_label = self._match_feature_label(step)
+                btn_label: str = click_match_label(step.button)
                 samples.append(
                     f"000 {full_prefix}每隔 {_fmt_ms(int(step.delay * 1000))} ms "
-                    f"点击 {feat_label}"
+                    f"{btn_label} {feat_label}"
                 )
             else:
                 samples.append(f"    {full_prefix}{step.name}")
@@ -961,6 +1043,7 @@ class BaseTask(ABC):
         elif step.type == "click_match":
             delay_ms = int(step.delay * 1000)
             feat_label: str = self._match_feature_label(step)
+            btn_label: str = click_match_label(step.button)
             is_sel = (
                 (not running) and self.col_focus == "right"
                 and self.right_nav.index == nav_idx
@@ -971,7 +1054,7 @@ class BaseTask(ABC):
                     and step.runtime_remaining_ms is not None else delay_ms
                 )
                 content = self._runtime_match_content(
-                    status, display_ms, feat_label,
+                    status, display_ms, feat_label, action=btn_label,
                 )
             else:
                 is_edit = is_sel and self.right_editing
@@ -981,7 +1064,7 @@ class BaseTask(ABC):
                 )
                 content = (
                     f"每隔 {ms_str} ms "
-                    f"点击 {feat_label}"
+                    f"{btn_label} {feat_label}"
                 )
             rows.append((
                 W.inner_tree(
@@ -996,6 +1079,12 @@ class BaseTask(ABC):
         elif step.type == "match":
             delay_ms = int(step.delay * 1000)
             feat_label: str = self._match_feature_label(step)
+            match_action: str = (
+                click_match_label("left")
+                if self._is_locator_slot(
+                    (step.feature_type or "").split("/")[0]
+                ) else "检测"
+            )
             is_sel = (
                 (not running) and self.col_focus == "right"
                 and self.right_nav.index == nav_idx
@@ -1006,7 +1095,7 @@ class BaseTask(ABC):
                     and step.runtime_remaining_ms is not None else delay_ms
                 )
                 content = self._runtime_match_content(
-                    status, display_ms, feat_label,
+                    status, display_ms, feat_label, action=match_action,
                 )
             else:
                 is_edit = is_sel and self.right_editing
@@ -1016,7 +1105,7 @@ class BaseTask(ABC):
                 )
                 content = (
                     f"每隔 {ms_str} ms "
-                    f"检测 {feat_label}"
+                    f"{match_action} {feat_label}"
                 )
             rows.append((
                 W.inner_tree(
@@ -1053,6 +1142,11 @@ class BaseTask(ABC):
         branch_base: str = child_prefix
 
         for bi, branch in enumerate(branches):
+            # Skip branches with no steps AND no loop label — they're
+            # "success" markers whose action already happened during
+            # matching.  Branches with loop="结束" etc. are still shown.
+            if not branch.steps and not branch.loop:
+                continue
             branch_last: bool = bi == len(branches) - 1
             branch_connector: str = (
                 "\u2514\u2500 " if branch_last else "\u251c\u2500 "
@@ -1066,7 +1160,7 @@ class BaseTask(ABC):
                 b_content = f"{C.MAUVE}{branch.condition}{C.RESET}"
                 b_sel = False
             rows.append((
-                W.inner_tree(b_content, right_w, prefix=branch_prefix, selected=b_sel),
+                W.inner_tree(b_content, right_w, prefix=f"    {branch_prefix}", selected=b_sel),
                 b_sel,
             ))
             branch_child_prefix: str = branch_base + (
@@ -1078,6 +1172,15 @@ class BaseTask(ABC):
                     sub_step, branch_child_prefix, sub_last, rows, right_w,
                     nav_idx, running,
                 )
+            # Show "返回重试" indicator for looping branches, at same
+            # indent level as the branch's child steps.
+            if branch.loop == "回到本步骤":
+                loop_text = f"{C.MAUVE}返回重试{C.RESET}"
+                loop_full_prefix: str = branch_child_prefix + "\u2514\u2500 "
+                rows.append((
+                    W.inner_tree(loop_text, right_w, prefix=f"    {loop_full_prefix}", selected=False),
+                    False,
+                ))
 
         return nav_idx
 
@@ -1104,10 +1207,17 @@ class BaseTask(ABC):
     @staticmethod
     def _runtime_match_content(
         status: str, delay_ms: int, feature_label: str,
+        action: str = "检测",
     ) -> str:
+        """Build the running-mode content for match / click_match steps.
+
+        *action* is the verb shown between the delay and the feature
+        label — ``"检测"`` for ``match`` steps, ``"左键"`` / ``"右键"``
+        / ``"中键"`` for ``click_match`` steps.
+        """
         if status == _ST_DIM:
-            return f"{C.GRAY}每隔 {_fmt_ms(delay_ms)} ms 检测 {feature_label}{C.RESET}"
-        return f"每隔 {C.YELLOW}{_fmt_ms(delay_ms)}{C.RESET} ms 检测 {feature_label}"
+            return f"{C.GRAY}每隔 {_fmt_ms(delay_ms)} ms {action} {feature_label}{C.RESET}"
+        return f"每隔 {C.YELLOW}{_fmt_ms(delay_ms)}{C.RESET} ms {action} {feature_label}"
 
     @staticmethod
     def _runtime_branch_content(status: str, name: str) -> str:
@@ -1129,6 +1239,7 @@ class BaseTask(ABC):
             "button": step.button,
             "clicks": step.clicks,
             "fallback_key": step.fallback_key,
+            "retry_key": step.retry_key,
             "node_id": step.node_id,
             "loop_until_match": step.loop_until_match,
         }
@@ -1158,6 +1269,7 @@ class BaseTask(ABC):
             button=d.get("button", "left"),
             clicks=d.get("clicks", 1),
             fallback_key=d.get("fallback_key"),
+            retry_key=d.get("retry_key"),
             node_id=d.get("node_id"),
             loop_until_match=d.get("loop_until_match", False),
         )
@@ -1232,16 +1344,24 @@ class BaseTask(ABC):
         """Create a :class:`FocusGuard` (失焦即终止运行)."""
         return FocusGuard()
 
-    def _feature_ready(self, feature_type: str) -> bool:
-        """Return ``True`` if *feature_type*'s slot has a template + region."""
+    def _feature_ready(
+        self, feature_type: str, require_region: bool = True,
+    ) -> bool:
+        """Return ``True`` if *feature_type*'s slot is ready to use.
+
+        ``match`` steps need a template **and** a region (feature is
+        expected at a known position).  ``click_match`` steps only need
+        a template — they search the whole screen, so pass
+        ``require_region=False``.
+        """
         if self.store is None:
             return False
         slot = self.store.get_slot(feature_type)
-        return (
-            slot is not None
-            and slot.has_template()
-            and slot.region is not None
-        )
+        if slot is None or not slot.has_template():
+            return False
+        if require_region and slot.region is None:
+            return False
+        return True
 
     def _branch_feature_type(self, branch: Branch) -> str | None:
         """Map a branch's condition label back to a feature type.
@@ -1396,7 +1516,14 @@ class BaseTask(ABC):
         ftypes: list[str] = [f for f in (step.feature_type or "").split("/") if f]
 
         # Spec: missing feature → stop the run with a message.
-        missing = [f for f in ftypes if not self._feature_ready(f)]
+        # Locator slots (click_match features) only need a template,
+        # not a region — they search the whole screen.
+        missing = [
+            f for f in ftypes
+            if not self._feature_ready(
+                f, require_region=not self._is_locator_slot(f),
+            )
+        ]
         if missing:
             labels = [
                 (self.store.SLOT_LABELS.get(f, f) if self.store else f)
@@ -1493,12 +1620,34 @@ class BaseTask(ABC):
             taken: Branch | None = None
             for b in step.branches:
                 ftype = self._branch_feature_type(b)
-                if ftype and self.store.match_slot(ftype)[1] >= fallback:
+                if not ftype:
+                    continue  # "else" branch — handled below
+                if self._is_locator_slot(ftype):
+                    # 定位特征 → 全屏匹配 + 点击
+                    _s, conf, cx, cy = (
+                        self.store.locate_template_fullscreen(ftype)
+                        if self.store else (None, 0.0, 0, 0)
+                    )
+                    if conf >= fallback:
+                        self._win32_click_at(cx, cy)
+                        taken = b
+                        break
+                elif self.store.match_slot(ftype)[1] >= fallback:
                     taken = b
                     break
 
             if taken is None:
-                # No branch matched yet — loop again.
+                # No feature branch matched — check for an "else" branch
+                # (a branch whose condition doesn't map to any slot).
+                for b in step.branches:
+                    if self._branch_feature_type(b) is None:
+                        taken = b
+                        break
+
+            if taken is None:
+                # No else branch either — press fallback key and loop.
+                if step.fallback_key:
+                    self._press_guarded(step.fallback_key)
                 continue
 
             self._set(step.node_id, _ST_DONE)
@@ -1639,17 +1788,42 @@ class BaseTask(ABC):
         """Re-render the current frame (running or paused)."""
         self.render_idle(run_state=self._run_state)
 
-    def _click_match_step(self, step: StepConfig) -> str:
-        """Execute a ``click_match`` step — loop match then mouse-click.
+    # ── Mouse / slot helpers ──────────────────────────────
 
-        Loops {countdown, screenshot, template-match} until the feature
-        is found, then clicks the matched region centre.
+    def _win32_click_at(self, cx: int, cy: int) -> None:
+        """Move cursor to (cx, cy), left-click, then restore position."""
+        pt = ctypes.wintypes.POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        try:
+            ctypes.windll.user32.SetCursorPos(cx, cy)
+            time.sleep(0.02)
+            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+            time.sleep(0.01)
+            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+        finally:
+            ctypes.windll.user32.SetCursorPos(pt.x, pt.y)
+
+    def _is_locator_slot(self, feature_type: str) -> bool:
+        """Return True if *feature_type* is a 定位特征 (CATEGORY_LOCATOR)."""
+        if self.store is None:
+            return False
+        from core.feature_store import CATEGORY_LOCATOR
+        return self.store.slot_category(feature_type) == CATEGORY_LOCATOR
+
+    def _click_match_step(self, step: StepConfig) -> str:
+        """Execute a ``click_match`` step — full-screen match then click.
+
+        Loops {countdown, full-screen screenshot, template-match} until
+        the feature is found anywhere on screen, then clicks the matched
+        region centre with ``step.button``.  Unlike ``match`` steps,
+        this ignores ``slot.region`` — the feature may appear anywhere.
         """
         ftypes: list[str] = [f for f in (step.feature_type or "").split("/") if f]
         ftype: str | None = ftypes[0] if ftypes else None
 
-        # Missing feature → stop.
-        if ftype and not self._feature_ready(ftype):
+        # Missing feature → stop.  click_match only needs a template
+        # (no region required — it searches the whole screen).
+        if ftype and not self._feature_ready(ftype, require_region=False):
             feat_label = self._match_feature_label(step)
             self._missing_msg = feat_label
             self._set(step.node_id, _ST_DONE)
@@ -1667,13 +1841,24 @@ class BaseTask(ABC):
             self._countdown(step, step.delay)
             self._interrupted()
 
-            slot, conf, cx, cy = self.store.locate_template(ftype or "")
+            slot, conf, cx, cy = self.store.locate_template_fullscreen(ftype or "")
             if slot is not None and conf >= fallback:
-                pyautogui.click(cx, cy, button=step.button, clicks=step.clicks)
+                if step.button == "none":
+                    # Hover-only: move cursor and restore it.
+                    pt = ctypes.wintypes.POINT()
+                    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+                    ctypes.windll.user32.SetCursorPos(cx, cy)
+                    time.sleep(0.02)
+                    ctypes.windll.user32.SetCursorPos(pt.x, pt.y)
+                else:
+                    self._win32_click_at(cx, cy)
                 self._set(step.node_id, _ST_DONE)
                 return "continue"
 
             self._interrupted()
+            if step.retry_key:
+                # 没找到特征 → 按一下 retry_key 再试
+                self._press_guarded(step.retry_key)
             time.sleep(0.05)
 
     def _countdown(self, step: StepConfig, delay: float) -> None:
@@ -1714,7 +1899,7 @@ class BaseTask(ABC):
                     self.right_nav.handle(key)
                 elif key in (K.LEFT, K.RIGHT, K.SHIFT_LEFT, K.SHIFT_RIGHT):
                     delta = (
-                        1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 10
+                        1000 if key in (K.SHIFT_LEFT, K.SHIFT_RIGHT) else 100
                     )
                     sign = -1 if key in (K.LEFT, K.SHIFT_LEFT) else 1
                     self._adjust_step_delay(self.right_nav.index, sign * delta)
