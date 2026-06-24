@@ -189,6 +189,15 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _fmt_mmss(seconds: float) -> str:
+    """Format seconds as ``MM:SS`` (rounded; MM may exceed 60)."""
+    total: int = int(round(seconds))
+    if total < 0:
+        total = 0
+    m, s = divmod(total, 60)
+    return f"{m:02d}:{s:02d}"
+
+
 # ── Tree rendering constants ──────────────────────────────
 
 _ST_DONE = "done"
@@ -306,6 +315,8 @@ class BaseTask(ABC):
         self._current_loop: int = 0
         self._loop_start_time: float | None = None
         self._loop_infinite: bool = False
+        # 上一次完整循环的耗时（秒），用于"实际"和"剩余"显示。
+        self._last_loop_time: float | None = None
         # 公式编辑：terms 为公式中的可编辑数字；active=0 表示编辑 N，
         # active>=1 表示编辑 terms[active-1]，编辑后 N 按向下取整重算。
         self._loop_terms: list[int] = []
@@ -366,6 +377,7 @@ class BaseTask(ABC):
         self._loop_start_time = None
         self._thr_backup = None
         self._loop_active = 0
+        self._last_loop_time = None
         if self.store is not None:
             self._loop_count = int(self.store.settings.get("loop_count", 0))
         else:
@@ -449,34 +461,51 @@ class BaseTask(ABC):
 
         if view == "steps":
             right_rows, right_w = self._build_steps_panel(steps, running)
-            right_title = self._steps_title(running)
+            right_title = "执行图"
+            # Missing-feature stop message（插在步骤末尾、用时行之前）
+            if self._missing_msg:
+                right_rows.append((
+                    W.inner_line(
+                        f"{C.RED}缺少特征: {self._missing_msg}{C.RESET}", right_w,
+                    ),
+                    False,
+                ))
+            # 用时信息行追加到步骤列表最下方，不参与滚动。
+            right_rows.append(
+                self._build_timing_row(running, right_w),
+            )
         else:
             right_rows, right_w = self._build_features_panel(running)
             right_title = "特征库"
-
-        # Missing-feature stop message (shown until next keypress).
-        if self._missing_msg:
-            right_rows.append((
-                W.inner_line(
-                    f"{C.RED}缺少特征: {self._missing_msg}{C.RESET}", right_w,
-                ),
-                False,
-            ))
+            if self._missing_msg:
+                right_rows.append((
+                    W.inner_line(
+                        f"{C.RED}缺少特征: {self._missing_msg}{C.RESET}", right_w,
+                    ),
+                    False,
+                ))
 
         # ── Viewport: clamp to terminal height ──
         term_h: int = shutil.get_terminal_size().lines
         # Outer frame: top border + blank + header + separator + bottom border = 5
         max_content: int = max(4, term_h - 5)
 
-        # 在执行图视图下，循环次数行作为固定表头始终置顶，
-        # 不参与视口滚动，方便随时查看。
-        fixed_header: list[tuple[str, bool]] = []
+        # 执行图：顶部固定循环次数行，底部固定用时行，中间步骤可滚动。
+        fixed_top: list[tuple[str, bool]] = []
+        fixed_bottom: list[tuple[str, bool]] = []
         scroll_rows: list[tuple[str, bool]] = right_rows
-        if view == "steps" and right_rows:
-            fixed_header = [right_rows[0]]
+        if view == "steps" and len(right_rows) >= 2:
+            # 最上方：循环次数行；最下方：用时行
+            fixed_top = [right_rows[0]]
+            fixed_bottom = [right_rows[-1]]
+            scroll_rows = right_rows[1:-1]
+        elif view == "steps" and right_rows:
+            fixed_top = [right_rows[0]]
             scroll_rows = right_rows[1:]
 
-        avail: int = max(0, max_content - len(fixed_header))
+        avail: int = max(
+            0, max_content - len(fixed_top) - len(fixed_bottom),
+        )
         total_scroll: int = len(scroll_rows)
 
         if total_scroll > avail:
@@ -496,13 +525,13 @@ class BaseTask(ABC):
             vs = max(0, min(vs, total_scroll - avail))
             self._viewport_start = vs
 
-            # Slice scroll rows; fixed header stays on top.
+            # Slice scroll rows; fixed top/bottom stay on top/bottom.
             visible: list[tuple[str, bool]] = scroll_rows[vs:vs + avail]
-            right_rows = fixed_header + visible
+            right_rows = fixed_top + visible + fixed_bottom
         else:
-            # 内容不溢出：固定表头 + 全部滚动行。
+            # 内容不溢出：固定顶 + 全部滚动 + 固定底。
             self._viewport_start = 0
-            right_rows = fixed_header + scroll_rows
+            right_rows = fixed_top + scroll_rows + fixed_bottom
 
         lines: list[str] = W.two_column_frame(
             self.task_name, "菜单", left_rows,
@@ -768,18 +797,33 @@ class BaseTask(ABC):
             total += s.delay
         return total
 
-    def _steps_title(self, running: bool) -> str:
-        """执行图标题，附淡色的预计/实际用时（HH:MM:SS）。"""
-        pred: float = self._estimate_loop_duration()
-        pred_hms: str = _fmt_hms(pred)
-        if running and self._loop_start_time is not None:
-            real: float = time.monotonic() - self._loop_start_time
-            real_hms: str = _fmt_hms(real)
-            return (
-                f"执行图 {C.LABEL}预计: {pred_hms} "
-                f"实际: {real_hms}{C.RESET}"
-            )
-        return f"执行图 {C.LABEL}预计: {pred_hms}{C.RESET}"
+    def _build_timing_row(
+        self, running: bool, right_w: int,
+    ) -> tuple[str, bool]:
+        """构建执行图底部的用时信息行（固定不滚动）。
+
+        显示预计、实际、剩余用时，淡色，不可选。
+        """
+        pred_mmss: str = _fmt_mmss(self._estimate_loop_duration())
+        if running:
+            parts: list[str] = [
+                f"{C.LABEL}预计: {pred_mmss}",
+            ]
+            if self._last_loop_time is not None and self._last_loop_time > 0:
+                parts.append(f"实际: {_fmt_mmss(self._last_loop_time)}")
+            if (
+                not self._loop_infinite
+                and self._loop_count > 0
+                and self._last_loop_time is not None
+                and self._last_loop_time > 0
+            ):
+                rem_s: float = self._last_loop_time * self._loop_count
+                parts.append(f"剩余: {_fmt_mmss(rem_s)}")
+            parts.append(C.RESET)
+            content = " ".join(parts)
+        else:
+            content = f"{C.LABEL}预计: {pred_mmss}{C.RESET}"
+        return (W.inner_line(content, right_w), False)
 
     def _build_features_panel(
         self, running: bool,
@@ -1855,6 +1899,8 @@ class BaseTask(ABC):
                 if sig in ("end", "stop"):
                     return
                 # ── 一轮循环完成 ──
+                # 记录本轮耗时，供"实际"和"剩余"显示。
+                self._last_loop_time = time.monotonic() - self._loop_start_time
                 # 有限次数：每完成一轮 _loop_count 减 1 并持久化，
                 # 显示的数字随之实质减少；减到 0 即全部完成，停止运行，
                 # 此时 _loop_count 已为 0（即「无限」），下次进入任务即重置。
