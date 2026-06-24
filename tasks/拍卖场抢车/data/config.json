@@ -13,10 +13,10 @@
     },
     "car_absent": {
       "region": [
-        2158,
-        1425,
-        198,
-        73
+        135,
+        1974,
+        805,
+        89
       ],
       "template_file": "car_absent.png",
       "threshold": 0.9
@@ -47,10 +47,14 @@
       "name": "Enter (搜索)",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.51,
+      "delay": 0.5,
       "feature_type": null,
+      "button": "left",
+      "clicks": 1,
       "fallback_key": null,
-      "node_id": "enter_search"
+      "retry_key": null,
+      "node_id": "enter_search",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
@@ -58,17 +62,25 @@
       "key": "enter",
       "delay": 0.2,
       "feature_type": null,
+      "button": "left",
+      "clicks": 1,
       "fallback_key": null,
-      "node_id": "enter"
+      "retry_key": null,
+      "node_id": "enter",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.1,
+      "delay": 0.2,
       "feature_type": null,
+      "button": "left",
+      "clicks": 1,
       "fallback_key": null,
-      "node_id": "enter2"
+      "retry_key": null,
+      "node_id": "enter2",
+      "loop_until_match": false
     },
     {
       "name": "判断",
@@ -76,8 +88,12 @@
       "key": null,
       "delay": 0.8,
       "feature_type": "car_present/car_absent",
+      "button": "left",
+      "clicks": 1,
       "fallback_key": null,
+      "retry_key": null,
       "node_id": "match_car",
+      "loop_until_match": false,
       "branches": [
         {
           "condition": "有车状态",
@@ -90,8 +106,12 @@
               "key": "y",
               "delay": 0.1,
               "feature_type": null,
+              "button": "left",
+              "clicks": 1,
               "fallback_key": null,
-              "node_id": "y"
+              "retry_key": null,
+              "node_id": "y",
+              "loop_until_match": false
             },
             {
               "name": "↓",
@@ -99,8 +119,12 @@
               "key": "down",
               "delay": 0.2,
               "feature_type": null,
+              "button": "left",
+              "clicks": 1,
               "fallback_key": null,
-              "node_id": "down"
+              "retry_key": null,
+              "node_id": "down",
+              "loop_until_match": false
             },
             {
               "name": "Enter",
@@ -108,8 +132,12 @@
               "key": "enter",
               "delay": 0.5,
               "feature_type": null,
+              "button": "left",
+              "clicks": 1,
               "fallback_key": null,
-              "node_id": "enter_buy1"
+              "retry_key": null,
+              "node_id": "enter_buy1",
+              "loop_until_match": false
             },
             {
               "name": "Enter",
@@ -117,17 +145,25 @@
               "key": "enter",
               "delay": 0.2,
               "feature_type": null,
+              "button": "left",
+              "clicks": 1,
               "fallback_key": null,
-              "node_id": "enter_buy2"
+              "retry_key": null,
+              "node_id": "enter_buy2",
+              "loop_until_match": false
             },
             {
               "name": "判断",
               "type": "match",
               "key": null,
-              "delay": 0.05,
+              "delay": 0.1,
               "feature_type": "auction_success/auction_failure",
+              "button": "left",
+              "clicks": 1,
               "fallback_key": null,
+              "retry_key": null,
               "node_id": "match_result",
+              "loop_until_match": false,
               "branches": [
                 {
                   "condition": "抢车成功",
@@ -146,8 +182,12 @@
                       "key": "enter",
                       "delay": 1.0,
                       "feature_type": null,
+                      "button": "left",
+                      "clicks": 1,
                       "fallback_key": null,
-                      "node_id": "fail_enter"
+                      "retry_key": null,
+                      "node_id": "fail_enter",
+                      "loop_until_match": false
                     },
                     {
                       "name": "Esc",
@@ -155,8 +195,12 @@
                       "key": "esc",
                       "delay": 1.0,
                       "feature_type": null,
+                      "button": "left",
+                      "clicks": 1,
                       "fallback_key": null,
-                      "node_id": "fail_esc1"
+                      "retry_key": null,
+                      "node_id": "fail_esc1",
+                      "loop_until_match": false
                     },
                     {
                       "name": "Esc",
@@ -164,8 +208,12 @@
                       "key": "esc",
                       "delay": 1.0,
                       "feature_type": null,
+                      "button": "left",
+                      "clicks": 1,
                       "fallback_key": null,
-                      "node_id": "fail_esc2"
+                      "retry_key": null,
+                      "node_id": "fail_esc2",
+                      "loop_until_match": false
                     }
                   ]
                 }
@@ -182,10 +230,14 @@
               "name": "Esc",
               "type": "keypress",
               "key": "esc",
-              "delay": 0.01,
+              "delay": 0.1,
               "feature_type": null,
+              "button": "left",
+              "clicks": 1,
               "fallback_key": null,
-              "node_id": "nocar_esc"
+              "retry_key": null,
+              "node_id": "nocar_esc",
+              "loop_until_match": false
             }
           ]
         }

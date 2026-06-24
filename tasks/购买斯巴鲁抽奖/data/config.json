@@ -128,7 +128,7 @@
       "name": "判断小写厂牌",
       "type": "match",
       "key": null,
-      "delay": 0.1,
+      "delay": 0.5,
       "feature_type": "subaru_factory_lower",
       "button": "left",
       "clicks": 1,
@@ -325,7 +325,7 @@
       "name": "判断大写厂牌",
       "type": "match",
       "key": null,
-      "delay": 0.1,
+      "delay": 0.5,
       "feature_type": "subaru_factory_upper",
       "button": "left",
       "clicks": 1,
@@ -784,7 +784,7 @@
       "name": "判断大写厂牌",
       "type": "match",
       "key": null,
-      "delay": 0.1,
+      "delay": 0.5,
       "feature_type": "subaru_factory_upper",
       "button": "left",
       "clicks": 1,
@@ -995,6 +995,10 @@
   ],
   "settings": {
     "global_threshold_fallback": 0.85,
-    "loop_count": 14
+    "loop_count": 0,
+    "loop_formula_terms": [
+      973,
+      30
+    ]
   }
 }
