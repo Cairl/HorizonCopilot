@@ -1,0 +1,100 @@
+{
+  "version": 4,
+  "slots": {
+    "race_start": {
+      "region": [
+        154,
+        1319,
+        719,
+        512
+      ],
+      "template_file": "race_start.png",
+      "threshold": 0.85
+    },
+    "race_finished": {
+      "region": [
+        145,
+        1981,
+        1364,
+        59
+      ],
+      "template_file": "race_finished.png",
+      "threshold": 0.85
+    }
+  },
+  "steps": [
+    {
+      "name": "检测开始赛事",
+      "type": "match",
+      "key": null,
+      "delay": 2.0,
+      "feature_type": "race_start",
+      "fallback_key": null,
+      "node_id": "match_start",
+      "loop_until_match": false
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 0.1,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "enter_race",
+      "loop_until_match": false
+    },
+    {
+      "name": "按下 W",
+      "type": "press",
+      "key": "w",
+      "delay": 1.0,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "press_w",
+      "loop_until_match": false
+    },
+    {
+      "name": "检测完成赛事",
+      "type": "match",
+      "key": null,
+      "delay": 2.0,
+      "feature_type": "race_finished",
+      "fallback_key": null,
+      "node_id": "match_finish",
+      "loop_until_match": false
+    },
+    {
+      "name": "松开 W",
+      "type": "release",
+      "key": "w",
+      "delay": 0.01,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "release_w",
+      "loop_until_match": false
+    },
+    {
+      "name": "X",
+      "type": "keypress",
+      "key": "x",
+      "delay": 0.01,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "key_x",
+      "loop_until_match": false
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 1.0,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "enter_finish",
+      "loop_until_match": false
+    }
+  ],
+  "settings": {
+    "global_threshold_fallback": 0.85
+  }
+}

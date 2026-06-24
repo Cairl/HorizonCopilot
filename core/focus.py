@@ -91,6 +91,8 @@ def activate_game_window() -> bool:
     已在前台或被前台进程启动时才允许）。这里通过模拟一次 Alt 键释放
     前台锁，再调用 ``SetForegroundWindow``。
 
+    切换窗口后自动检测并确保 Caps Lock 已开启。
+
     Returns:
         True  — 找到游戏窗口并尝试激活
         False — 未找到游戏窗口
@@ -110,6 +112,13 @@ def activate_game_window() -> bool:
         _user32.ShowWindow(hwnd, SW_RESTORE)
 
     _user32.SetForegroundWindow(hwnd)
+
+    # 确保 Caps Lock 已开启（游戏输入需要）
+    VK_CAPITAL = 0x14
+    if not (_user32.GetKeyState(VK_CAPITAL) & 1):
+        _user32.keybd_event(VK_CAPITAL, 0, 0, 0)        # key down
+        _user32.keybd_event(VK_CAPITAL, 0, 0x0002, 0)   # key up
+
     return True
 
 

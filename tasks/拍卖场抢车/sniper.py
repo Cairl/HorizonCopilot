@@ -90,6 +90,11 @@ class AuctionTask(BaseTask):
 
     task_name: str = "拍卖场抢车"
     task_tag: str = "auction"
+    intro_text: str = (
+        "在拍卖场中自动搜索并抢购目标车辆。\n"
+        "检测有车/无车状态，有车时自动竞拍；\n"
+        "购买失败时退出继续搜索下一辆。"
+    )
 
     # ── Setup ──────────────────────────────────────────────
 

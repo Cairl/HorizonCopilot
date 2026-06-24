@@ -1,6 +1,16 @@
 {
   "version": 4,
   "slots": {
+    "race_prep": {
+      "region": [
+        151,
+        1316,
+        726,
+        82
+      ],
+      "template_file": "race_prep.png",
+      "threshold": 0.85
+    },
     "race_finished": {
       "region": [
         131,
@@ -10,6 +20,16 @@
       ],
       "template_file": "race_finished.png",
       "threshold": 0.85
+    },
+    "race_lower_difficulty": {
+      "region": [
+        1262,
+        840,
+        1316,
+        484
+      ],
+      "template_file": "race_lower_difficulty.png",
+      "threshold": 0.85
     }
   },
   "steps": [
@@ -17,10 +37,11 @@
       "name": "PageUp",
       "type": "keypress",
       "key": "pageup",
-      "delay": 0.1,
+      "delay": 1.0,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "pageup1"
+      "node_id": "pageup1",
+      "loop_until_match": false
     },
     {
       "name": "PageUp",
@@ -29,7 +50,8 @@
       "delay": 0.1,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "pageup2"
+      "node_id": "pageup2",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
@@ -38,7 +60,8 @@
       "delay": 0.3,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter1"
+      "node_id": "enter1",
+      "loop_until_match": false
     },
     {
       "name": "→",
@@ -47,7 +70,8 @@
       "delay": 0.5,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "right1"
+      "node_id": "right1",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
@@ -56,7 +80,8 @@
       "delay": 0.1,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter2"
+      "node_id": "enter2",
+      "loop_until_match": false
     },
     {
       "name": "PageDown",
@@ -65,7 +90,8 @@
       "delay": 0.6,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "pagedown1"
+      "node_id": "pagedown1",
+      "loop_until_match": false
     },
     {
       "name": "PageDown",
@@ -74,70 +100,133 @@
       "delay": 0.1,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "pagedown2"
+      "node_id": "pagedown2",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 2.0,
+      "delay": 3.0,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter3"
+      "node_id": "enter3",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 2.0,
+      "delay": 3.0,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter4"
+      "node_id": "enter4",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 10.0,
+      "delay": 1.0,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter5"
+      "node_id": "enter5",
+      "loop_until_match": false
     },
     {
-      "name": "检测比赛完成",
+      "name": "检测赛事准备",
+      "type": "match",
+      "key": null,
+      "delay": 1.0,
+      "feature_type": "race_prep",
+      "fallback_key": null,
+      "node_id": "match_prep",
+      "loop_until_match": true,
+      "branches": [
+        {
+          "condition": "降低难度",
+          "loop": "回到本步骤",
+          "node_id": "branch_lower",
+          "steps": [
+            {
+              "name": "↓",
+              "type": "keypress",
+              "key": "down",
+              "delay": 0.1,
+              "feature_type": null,
+              "fallback_key": null,
+              "node_id": "lower_down",
+              "loop_until_match": false
+            },
+            {
+              "name": "Enter",
+              "type": "keypress",
+              "key": "enter",
+              "delay": 0.1,
+              "feature_type": null,
+              "fallback_key": null,
+              "node_id": "lower_enter",
+              "loop_until_match": false
+            }
+          ]
+        },
+        {
+          "condition": "赛事准备",
+          "loop": null,
+          "node_id": "branch_prep",
+          "steps": []
+        }
+      ]
+    },
+    {
+      "name": "Enter",
+      "type": "keypress",
+      "key": "enter",
+      "delay": 0.1,
+      "feature_type": null,
+      "fallback_key": null,
+      "node_id": "enter6",
+      "loop_until_match": false
+    },
+    {
+      "name": "检测赛事完成",
       "type": "match",
       "key": null,
       "delay": 5.0,
       "feature_type": "race_finished",
       "fallback_key": null,
-      "node_id": "match_race"
+      "node_id": "match_race",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.0,
+      "delay": 0.1,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter6"
+      "node_id": "enter7",
+      "loop_until_match": false
     },
     {
       "name": "Enter",
       "type": "keypress",
       "key": "enter",
-      "delay": 0.0,
+      "delay": 1.0,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "enter7"
+      "node_id": "enter8",
+      "loop_until_match": false
     },
     {
       "name": "Esc",
       "type": "keypress",
       "key": "esc",
-      "delay": 0.0,
+      "delay": 15.0,
       "feature_type": null,
       "fallback_key": null,
-      "node_id": "esc"
+      "node_id": "esc",
+      "loop_until_match": false
     }
   ],
   "settings": {

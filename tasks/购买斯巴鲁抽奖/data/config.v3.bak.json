@@ -1,0 +1,403 @@
+{
+    "version": 1,
+    "regions": {
+        "subaru_factory": null,
+        "subaru_car": null
+    },
+    "templates": {},
+    "steps": [
+        {
+            "name": "左",
+            "type": "keypress",
+            "key": "left",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "右",
+            "type": "keypress",
+            "key": "right",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Backspace",
+            "type": "keypress",
+            "key": "backspace",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "点击斯巴鲁厂",
+            "type": "click_match",
+            "feature_type": "subaru_factory",
+            "delay": 0.5
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "Space",
+            "type": "keypress",
+            "key": "space",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        },
+        {
+            "name": "PageDown",
+            "type": "keypress",
+            "key": "pagedown",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Backspace",
+            "type": "keypress",
+            "key": "backspace",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "点击斯巴鲁厂",
+            "type": "click_match",
+            "feature_type": "subaru_factory",
+            "delay": 0.5
+        },
+        {
+            "name": "点击斯巴鲁车",
+            "type": "click_match",
+            "feature_type": "subaru_car",
+            "delay": 0.5
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        },
+        {
+            "name": "PageDown",
+            "type": "keypress",
+            "key": "pagedown",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "左",
+            "type": "keypress",
+            "key": "left",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "左",
+            "type": "keypress",
+            "key": "left",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "右",
+            "type": "keypress",
+            "key": "right",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        },
+        {
+            "name": "PageDown",
+            "type": "keypress",
+            "key": "pagedown",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Backspace",
+            "type": "keypress",
+            "key": "backspace",
+            "delay": 0.05
+        },
+        {
+            "name": "上",
+            "type": "keypress",
+            "key": "up",
+            "delay": 0.05
+        },
+        {
+            "name": "点击斯巴鲁厂",
+            "type": "click_match",
+            "feature_type": "subaru_factory",
+            "delay": 0.5
+        },
+        {
+            "name": "点击斯巴鲁车",
+            "type": "click_match",
+            "feature_type": "subaru_car",
+            "delay": 0.5
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "下",
+            "type": "keypress",
+            "key": "down",
+            "delay": 0.05
+        },
+        {
+            "name": "Enter",
+            "type": "keypress",
+            "key": "enter",
+            "delay": 0.05
+        },
+        {
+            "name": "Esc",
+            "type": "keypress",
+            "key": "esc",
+            "delay": 0.05
+        }
+    ],
+    "settings": {
+        "global_threshold_fallback": 0.85
+    }
+}

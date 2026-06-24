@@ -1,12 +1,16 @@
-"""图外循环蓝图赛事 — 执行按键序列并检测比赛完成。
+"""图外循环蓝图赛事 — 执行按键序列并检测赛事完成。
 
 工作流程:
-    1. 用户通过特征库截取比赛完成特征
+    1. 用户通过特征库截取赛事完成特征（可选：降低难度特征）
     2. 循环:
        ① PageUp → PageUp → Enter → → → Enter → PageDown → PageDown →
           Enter → Enter → Enter
-       ② 每隔 N ms 检测比赛完成（循环直到识别到）
-       ③ Enter → Enter → Esc → 回到①
+       ② 每隔 N ms 检测赛事准备（loop_until_match 分支判断）:
+          - 检测到「降低难度」: ↓ → Enter → 回到②继续检测
+          - 检测到「赛事准备」: 继续后续步骤
+          - 都未检测到: 重新倒计时再检测
+       ③ Enter → 每隔 N ms 检测赛事完成（循环直到识别到）
+       ④ Enter → Enter → Esc → 回到①
     3. 实时树状运行图，高亮当前步骤
     4. 游戏失焦自动暂停
 
@@ -40,12 +44,20 @@ DATA_DIR = _TASK_DIR / "data"
 class FeatureType(Enum):
     """图外循环蓝图赛事任务所需的特征类型。"""
 
+    RACE_PREP = "race_prep"
+    """赛事准备。"""
+
     RACE_FINISHED = "race_finished"
-    """比赛完成。"""
+    """赛事完成。"""
+
+    RACE_LOWER_DIFFICULTY = "race_lower_difficulty"
+    """降低难度提示（赛事准备界面偶发弹出的降低难度选项）。"""
 
 
 SLOT_LABELS: dict[str, str] = {
-    "race_finished": "比赛完成",
+    "race_prep": "赛事准备",
+    "race_finished": "赛事完成",
+    "race_lower_difficulty": "降低难度",
 }
 
 _DEFAULT_STEPS: list[dict] = [
@@ -59,9 +71,33 @@ _DEFAULT_STEPS: list[dict] = [
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
+    {
+        "name": "检测赛事准备",
+        "type": "match",
+        "feature_type": "race_prep",
+        "delay": 0.5,
+        "loop_until_match": True,
+        "branches": [
+            {
+                "condition": "降低难度",
+                "loop": "回到本步骤",
+                "node_id": "branch_lower",
+                "steps": [
+                    {"name": "↓", "type": "keypress", "key": "down", "delay": 0.1, "node_id": "lower_down"},
+                    {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.3, "node_id": "lower_enter"},
+                ],
+            },
+            {
+                "condition": "赛事准备",
+                "loop": None,
+                "node_id": "branch_prep",
+                "steps": [],
+            },
+        ],
+    },
     {"name": "Enter", "type": "keypress", "key": "enter", "delay": 0.05},
     {
-        "name": "检测比赛完成",
+        "name": "检测赛事完成",
         "type": "match",
         "feature_type": "race_finished",
         "delay": 0.5,
@@ -77,21 +113,32 @@ _DEFAULT_STEPS: list[dict] = [
 # ══════════════════════════════════════════════════════════
 
 class RaceLoopTask(BaseTask):
-    """图外循环蓝图赛事任务 — 执行按键序列并检测比赛完成。
+    """图外循环蓝图赛事任务 — 执行按键序列并检测赛事完成。
 
     流程::
 
         ① PageUp → PageUp → Enter → → → Enter → PageDown → PageDown →
-           Enter → Enter → Enter
-        ② 每隔 N ms 检测比赛完成（循环直到识别到）
-        ③ Enter → Enter → Esc → 回到①
+           Enter → Enter → Enter → 检测赛事准备(loop_until_match) → Enter
+        ② 检测赛事准备为循环分支判断:
+           - 降低难度 → ↓ → Enter → 回到②
+           - 赛事准备 → 继续后续步骤
+        ③ 每隔 N ms 检测赛事完成（循环直到识别到）
+        ④ Enter → Enter → Esc → 回到①
 
-    所需特征类型 (1 个固定槽位):
-        - ``race_finished`` — 比赛完成
+    所需特征类型 (3 个槽位):
+        - ``race_prep`` — 赛事准备（必需）
+        - ``race_finished`` — 赛事完成（必需）
+        - ``race_lower_difficulty`` — 降低难度（可选，未截取时
+          「降低难度」分支永不匹配，任务按原流程运行）
     """
 
     task_name: str = "图外循环蓝图赛事"
     task_tag: str = "race_loop"
+    intro_text: str = (
+        "从大地图进入蓝图赛事菜单，自动翻页选择\n"
+        "赛事，检测赛事准备后进入比赛，\n"
+        "完成赛事后结算并循环。含降低难度分支处理。"
+    )
 
     # ── Setup ──────────────────────────────────────────────
 
@@ -148,13 +195,19 @@ class RaceLoopTask(BaseTask):
                         RaceLoopTask._fill_node_ids(lb.steps, db.steps)
 
     def _default_steps(self) -> list[StepConfig]:
-        """Return the hardcoded default step tree (flat, no branches).
+        """Return the hardcoded default step tree.
 
         Structure::
 
             PageUp → PageUp → Enter → → → Enter → PageDown → PageDown →
-            Enter → Enter → Enter → Enter → 检测比赛完成(match, 循环直到识别到) →
+            Enter → Enter → Enter → 检测赛事准备(match, loop_until_match) →
+            Enter → 检测赛事完成(match, 循环直到识别到) →
             Enter → Enter → Esc (loop: 回到①)
+
+        ``检测赛事准备`` 是一个循环分支判断：每次倒计时后依次检测
+        各分支特征，取首个匹配者。``降低难度`` 分支执行 ↓+Enter 后
+        回到本步骤继续检测；``赛事准备`` 分支为空，表示直接继续到
+        下一步。若本轮无分支匹配则重新倒计时再检测。
         """
         return [
             StepConfig(
@@ -198,11 +251,41 @@ class RaceLoopTask(BaseTask):
                 delay=0.05, node_id="enter5",
             ),
             StepConfig(
+                "检测赛事准备",
+                type="match",
+                feature_type="race_prep",
+                delay=0.5,
+                node_id="match_prep",
+                loop_until_match=True,
+                branches=[
+                    Branch(
+                        "降低难度",
+                        [
+                            StepConfig(
+                                "↓", type="keypress", key="down",
+                                delay=0.1, node_id="lower_down",
+                            ),
+                            StepConfig(
+                                "Enter", type="keypress", key="enter",
+                                delay=0.3, node_id="lower_enter",
+                            ),
+                        ],
+                        loop="回到本步骤",
+                        node_id="branch_lower",
+                    ),
+                    Branch(
+                        "赛事准备",
+                        loop=None,
+                        node_id="branch_prep",
+                    ),
+                ],
+            ),
+            StepConfig(
                 "Enter", type="keypress", key="enter",
                 delay=0.05, node_id="enter6",
             ),
             StepConfig(
-                "检测比赛完成",
+                "检测赛事完成",
                 type="match",
                 feature_type="race_finished",
                 delay=0.5,

@@ -290,6 +290,37 @@ class FeatureStore:
         except Exception:
             return None, 0.0
 
+    def locate_template(
+        self, feature_type: str,
+    ) -> tuple[FeatureSlot | None, float, int, int]:
+        """截图匹配并返回最佳匹配点在屏幕上的绝对坐标。
+
+        Returns:
+            ``(slot, confidence, abs_x, abs_y)`` —
+            *slot* 为匹配的槽位（或 ``None``），*confidence* 为
+            置信度 (0.0-1.0)，*abs_x* / *abs_y* 为匹配区域中心
+            在屏幕上的绝对像素坐标。匹配失败时返回
+            ``(None, 0.0, 0, 0)``。
+        """
+        from core.template_match import locate_template as _loc
+
+        slot = self.slots.get(feature_type)
+        if slot is None or not slot.has_template() or slot.region is None:
+            return None, 0.0, 0, 0
+
+        rx, ry, rw, rh = slot.region
+        try:
+            screenshot = pyautogui.screenshot(region=(rx, ry, rw, rh))
+            scr_np: np.ndarray = np.array(screenshot)
+            conf, mx, my = _loc(scr_np, slot.template_image)
+            tw: int = slot.template_image.shape[1]
+            th: int = slot.template_image.shape[0]
+            cx: int = rx + mx + tw // 2
+            cy: int = ry + my + th // 2
+            return slot, conf, cx, cy
+        except Exception:
+            return None, 0.0, 0, 0
+
     # ── Sequence protocol ───────────────────────────────────
 
     def __len__(self) -> int:

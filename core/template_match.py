@@ -43,5 +43,35 @@ def match_template(screenshot: np.ndarray, template: np.ndarray) -> float:
     if th > sh or tw > sw:
         return 0.0
     result = cv2.matchTemplate(scr_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, _ = cv2.minMaxLoc(result)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
     return float(max_val)
+
+
+def locate_template(
+    screenshot: np.ndarray, template: np.ndarray,
+) -> tuple[float, int, int]:
+    """模板匹配并返回最佳匹配位置。
+
+    Args:
+        screenshot: 截图 numpy 数组（RGB 或灰度）。
+        template: 模板 numpy 数组（RGB 或灰度）。
+
+    Returns:
+        ``(confidence, x, y)`` — 匹配置信度 (0.0-1.0) 和
+        最佳匹配点在截图内的左上角坐标。
+    """
+    if len(screenshot.shape) == 3:
+        scr_gray = cv2.cvtColor(screenshot, cv2.COLOR_RGB2GRAY)
+    else:
+        scr_gray = screenshot
+    if len(template.shape) == 3:
+        tpl_gray = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY)
+    else:
+        tpl_gray = template
+    th, tw = tpl_gray.shape[:2]
+    sh, sw = scr_gray.shape[:2]
+    if th > sh or tw > sw:
+        return 0.0, 0, 0
+    result = cv2.matchTemplate(scr_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    return float(max_val), max_loc[0], max_loc[1]
